@@ -14,6 +14,7 @@ const DOCS = [
   { key: 'aadhaar', name: 'Aadhaar (card form)', label: 'sl10_11', slots: '10 + 11', w: 0.68 },
 ];
 const LABELLED = DOCS.filter(d => d.label);
+const HAS_PHOTO = ['cert10', 'cert12', 'aadhaar']; // documents with the student's photo on them
 const SLOTS = [
   { row: 1, title: 'Applicant Photograph', file: 'photo' },
   { row: 2, title: 'Applicant Signature', file: 'sign' },
@@ -45,7 +46,8 @@ const fresh = () => ({
 });
 let S = fresh();
 const M = { photo: null, pages: {}, labelImgs: {}, pageKind: null, tabId: null, busy: '' }; // memory only
-let settings = { routineAuto: true, labelPos: {} };                                          // no student data
+let settings = { routineAuto: true, labelPos: {} };
+globalThis.__cnMem = M; // for tests                                          // no student data
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -142,7 +144,8 @@ function vStart() {
 function vScan() {
   const box = d => {
     const pages = M.pages[d.key] || [], meta = S.docMeta[d.key];
-    const thumbs = pages.length ? pages.map((p, i) => `<img src="${p.thumb}" data-edit="${d.key}:${i}" title="Click to rotate / crop">`).join('')
+    const thumbs = pages.length ? pages.map((p, i) => `<span class="th"><img src="${p.thumb}" data-edit="${d.key}:${i}" title="Click to crop / clean up">
+        <span class="rot"><button class="small" data-rot="${d.key}:${i}:-1" title="Turn left">⟲</button><button class="small" data-rot="${d.key}:${i}:1" title="Turn right">⟳</button></span></span>`).join('')
       : (meta && meta.thumbs || []).map(t => `<img src="${t}">`).join('');
     const warns = pages.flatMap(p => p.warn);
     const lost = !pages.length && meta && meta.pages;
@@ -353,6 +356,12 @@ document.addEventListener('click', async e => {
   if (t.dataset.step) { S.step = t.dataset.step; save(); render(); if (S.step === 'pariksha') refreshTab(); return; }
   if (t.dataset.go) { S.step = t.dataset.go; save(); render(); if (S.step === 'pariksha') refreshTab(); window.scrollTo(0, 0); return; }
   if (t.dataset.edit) { const [k, i] = t.dataset.edit.split(':'); return openPageEditor(k, +i); }
+  if (t.dataset.rot) {
+    const [k, i, dir] = t.dataset.rot.split(':'), p = M.pages[k][+i];
+    p.cur = IMG.rotate90(p.cur, +dir); p.thumb = IMG.scaleTo(p.cur, 200).toDataURL('image/jpeg', 0.7);
+    p.warn = p.warn.filter(w => !/sideways/.test(w));
+    storeMeta(k); invalidateFiles([k]); save(); return render();
+  }
   if (t.dataset.clear) { delete M.pages[t.dataset.clear]; delete S.docMeta[t.dataset.clear]; invalidateFiles(); save(); return render(); }
   if (t.dataset.dismiss) { S.dismissed.push(t.dataset.dismiss); save(); return render(); }
   if (t.dataset.labOff) { labelState(byKey(t.dataset.labOff)).on = false; invalidateFiles(); save(); return render(); }
@@ -454,7 +463,7 @@ async function processPages(key, canvases) {
   for (const c of canvases) {
     let cur, warn = [];
     if (key === 'sign') cur = IMG.signatureProcess(c);
-    else { const r = IMG.autoProcess(c); cur = r.canvas; warn = r.warn; }
+    else { const r = await IMG.autoProcess(c, { hasPhoto: HAS_PHOTO.includes(key) }); cur = r.canvas; warn = r.warn; }
     out.push({ orig: c, cur, warn, thumb: IMG.scaleTo(cur, 200).toDataURL('image/jpeg', 0.7) });
   }
   return out;
@@ -511,7 +520,7 @@ function openPageEditor(key, idx) {
     ['⟲ Rotate', () => { page.cur = IMG.rotate90(page.cur, -1); sel = null; update(); draw(); }],
     ['⟳ Rotate', () => { page.cur = IMG.rotate90(page.cur, 1); sel = null; update(); draw(); }],
     ['✂ Apply crop', () => { if (!sel) return toast('Drag a box on the page first'); const r = normR(sel); if (r.w < 20 || r.h < 20) return; page.cur = IMG.crop(page.cur, r); sel = null; update(); draw(); }],
-    ['Auto clean-up', () => { const r = key === 'sign' ? { canvas: IMG.signatureProcess(page.orig), warn: [] } : IMG.autoProcess(page.orig); page.cur = r.canvas; page.warn = r.warn; sel = null; update(); draw(); }],
+    ['Auto clean-up', async () => { const r = key === 'sign' ? { canvas: IMG.signatureProcess(page.orig), warn: [] } : await IMG.autoProcess(page.orig, { hasPhoto: HAS_PHOTO.includes(key) }); page.cur = r.canvas; page.warn = r.warn; sel = null; update(); draw(); }],
     ['Undo all (original scan)', () => { page.cur = IMG.cloneCanvas(page.orig); sel = null; update(); draw(); }],
   ], 'Drag on the page to select what to keep, then Apply crop.', () => render());
   cv.onpointerdown = ev => { const p = pt(ev); sel = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }; drag = true; cv.setPointerCapture(ev.pointerId); };

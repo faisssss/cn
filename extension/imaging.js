@@ -124,21 +124,36 @@ export function deskewAngle(c) {
 }
 
 // Bounding box of everything written/printed (keeps faint pen), plus a margin.
+// Small isolated marks near the edges (scanner specks, dust) are ignored.
 export function contentBox(c, margin = 0.025) {
   const s = scaleTo(c, 1000), g = gray(s), W = s.width, H = s.height;
   const thr = 205;
-  const colInk = new Uint16Array(W), rowInk = new Uint16Array(H);
+  const colInk = new Uint32Array(W), rowInk = new Uint32Array(H);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (g[y * W + x] < thr) { colInk[x]++; rowInk[y]++; }
-  const minC = 2;
-  let l = 0, r = W - 1, t = 0, b = H - 1;
-  while (l < W && colInk[l] < minC) l++;
-  while (r > l && colInk[r] < minC) r--;
-  while (t < H && rowInk[t] < minC) t++;
-  while (b > t && rowInk[b] < minC) b--;
+  const rows = mainSpan(rowInk, Math.max(2, W * 0.003), Math.round(H * 0.04));
+  const cols = mainSpan(colInk, Math.max(2, H * 0.003), Math.round(W * 0.04));
+  if (!rows || !cols) return { x: 0, y: 0, w: c.width, h: c.height };
+  let [t, b] = rows, [l, r] = cols;
   if (r - l < 20 || b - t < 20) return { x: 0, y: 0, w: c.width, h: c.height };
   const k = c.width / W, m = Math.round(Math.max(W, H) * margin);
   l = Math.max(0, l - m); t = Math.max(0, t - m); r = Math.min(W - 1, r + m); b = Math.min(H - 1, b + m);
   return { x: l * k, y: t * k, w: (r - l + 1) * k, h: (b - t + 1) * k };
+}
+// Split a profile into blocks separated by empty gaps; drop tiny blocks at either end.
+function mainSpan(p, minLine, gap) {
+  const blocks = []; let cur = null, empty = 0;
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] >= minLine) {
+      if (!cur || empty >= gap) { cur = { a: i, b: i, ink: 0 }; blocks.push(cur); }
+      cur.b = i; cur.ink += p[i]; empty = 0;
+    } else if (cur) { empty++; cur.ink += p[i]; }
+  }
+  if (!blocks.length) return null;
+  const total = blocks.reduce((t, b) => t + b.ink, 0);
+  let i = 0, j = blocks.length - 1;
+  while (i < j && blocks[i].ink < total * 0.01) i++;
+  while (j > i && blocks[j].ink < total * 0.01) j--;
+  return [blocks[i].a, blocks[j].b];
 }
 
 // Paper whiter, ink a little darker; colours kept.
@@ -172,13 +187,57 @@ export function quality(c) {
   return { sharp: Math.round(v), mean: Math.round(mean), warn };
 }
 
-export function autoProcess(c) {
+// Text lines run along the rows → strong row profile. Returns true if lines look vertical (page sideways).
+function looksSideways(c) {
+  const s = scaleTo(c, 700), g = gray(s), W = s.width, H = s.height;
+  const rows = new Float32Array(H), cols = new Float32Array(W);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (g[y * W + x] < 140) { rows[y]++; cols[x]++; }
+  const sharp = (a, n) => { let t = 0; for (let i = 1; i < a.length; i++) t += (a[i] - a[i - 1]) ** 2; return t / a.length / (n * n); };
+  return sharp(cols, H) > sharp(rows, W) * 1.6;
+}
+
+// Turn the page upright. Pages with a student photo: the face finder only sees an upright face.
+export async function uprightPage(c, hasPhoto) {
+  if (hasPhoto) {
+    try {
+      const det = await getDetector();
+      let best = { r: 0, score: 0 };
+      for (const r of [0, 1, 3, 2]) {
+        const page = scaleTo(r ? rotateTimes(c, r) : c, 1600);
+        const score = faceScoreTiled(det, page);
+        if (score > best.score) best = { r, score };
+        if (r === 0 && score > 0.8) break;
+      }
+      if (best.score > 0.6) return { canvas: best.r ? rotateTimes(c, best.r) : c, turned: best.r, sure: true, how: 'face ' + best.score.toFixed(2) };
+    } catch (e) { console.warn('upright by face failed', e); }
+    return { canvas: c, turned: 0, sure: false, how: 'no face' };   // tables fool the text check, so leave it
+  }
+  if (looksSideways(c)) return { canvas: rotate90(c, -1), turned: 3, sure: false, how: 'text' };
+  return { canvas: c, turned: 0, sure: true, how: 'text' };
+}
+const rotateTimes = (c, n) => { let o = c; for (let i = 0; i < n; i++) o = rotate90(o, 1); return o; };
+function faceScoreTiled(det, page) {
+  const T = Math.round(Math.min(page.width, page.height) / 3.5), step = Math.round(T / 2);
+  let best = 0;
+  for (let y = 0; y + T <= page.height + 1; y += step) for (let x = 0; x + T <= page.width + 1; x += step) {
+    const tile = crop(page, { x: Math.min(x, page.width - T), y: Math.min(y, page.height - T), w: T, h: T });
+    for (const d of det.detect(tile).detections || []) best = Math.max(best, (d.categories && d.categories[0] && d.categories[0].score) || 0);
+  }
+  return best;
+}
+
+export async function autoProcess(c, { hasPhoto = false } = {}) {
   let o = trimDarkEdges(c);
+  const up = await uprightPage(o, hasPhoto);
+  o = up.canvas;
   const a = deskewAngle(o);
   if (Math.abs(a) >= 0.25) o = rotateDeg(o, a);
   o = crop(o, contentBox(o));
   o = whiten(o);
-  return { canvas: scaleTo(o, 2200), angle: a, ...quality(o) };
+  const q = quality(o);
+  if (up.turned && !up.sure) q.warn.unshift('Page was sideways and has been turned – check it is the right way up');
+  if (!up.turned && !up.sure) q.warn.unshift('Could not confirm which way is up – check it, use ⟲ ⟳ if needed');
+  return { canvas: scaleTo(o, 2200), angle: a, turned: up.turned, how: up.how, ...q };
 }
 
 export function signatureProcess(c) {

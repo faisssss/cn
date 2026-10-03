@@ -55,6 +55,9 @@ button.danger { color: var(--red); }
 .box { display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--line); border-radius: 7px; padding: 7px; margin: 6px 0; background: #fff; }
 .box.empty { border-style: dashed; }
 .box .thumbs { display: flex; gap: 4px; flex-wrap: wrap; }
+.box .th { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
+.box .th .rot { display: flex; gap: 2px; }
+.box .th .rot button { padding: 0 6px; }
 .box .thumbs img { height: 64px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
 .box .meta { flex: 1; min-width: 0; }
 .box .name { font-weight: 600; }
