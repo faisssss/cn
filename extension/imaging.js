@@ -354,21 +354,32 @@ export async function photoOut(c, r) {
 // ---------- labels ----------
 
 // pos: {x, y, w} as fractions of page width/height (w = label width / page width). space: add white strip on top.
+// Label size on a page. pos.w = label length / page width; pos.rot = 0/90/180/270 (turned label).
+export function labelDims(pageWidth, img, pos) {
+  const lw = pos.w * pageWidth, lh = lw * img.naturalHeight / img.naturalWidth;
+  const side = ((pos.rot || 0) % 180) !== 0;
+  return { lw, lh, bw: side ? lh : lw, bh: side ? lw : lh };
+}
+export function drawLabel(ctx, img, x, y, d, rot) {
+  ctx.save(); ctx.translate(x + d.bw / 2, y + d.bh / 2); ctx.rotate((rot || 0) * Math.PI / 180);
+  ctx.drawImage(img, -d.lw / 2, -d.lh / 2, d.lw, d.lh); ctx.restore();
+}
+// pos: {x, y, w, rot} as fractions of the page. space: add a white strip on top for the label.
 export function composeLabel(page, labelImg, pos, on, space) {
   if (!on || !labelImg) return page;
-  const lw = pos.w * page.width, lh = lw * labelImg.naturalHeight / labelImg.naturalWidth;
-  const strip = space ? Math.round(lh + page.width * 0.03) : 0;
+  const d = labelDims(page.width, labelImg, pos);
+  const strip = space ? Math.round(d.bh + page.width * 0.03) : 0;
   const o = newCanvas(page.width, page.height + strip);
   const x = o.getContext('2d');
   x.drawImage(page, 0, strip);
-  x.drawImage(labelImg, pos.x * page.width, space ? page.width * 0.015 : pos.y * page.height, lw, lh);
+  drawLabel(x, labelImg, pos.x * page.width, space ? page.width * 0.015 : pos.y * page.height, d, pos.rot);
   return o;
 }
 
 // Is there ink where the label would sit? (to suggest a white strip)
 export function inkUnder(page, labelImg, pos) {
-  const lw = pos.w * page.width, lh = lw * labelImg.naturalHeight / labelImg.naturalWidth;
-  const r = { x: pos.x * page.width, y: pos.y * page.height, w: lw, h: lh };
+  const d = labelDims(page.width, labelImg, pos);
+  const r = { x: pos.x * page.width, y: pos.y * page.height, w: Math.min(d.bw, page.width), h: Math.min(d.bh, page.height) };
   const s = crop(page, r), g = gray(scaleTo(s, 400));
   let n = 0; for (let i = 0; i < g.length; i++) if (g[i] < 150) n++;
   return n / g.length > 0.01;

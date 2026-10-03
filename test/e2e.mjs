@@ -35,7 +35,8 @@ panel.on('pageerror', e => errors.push('panel: ' + e.message));
 panel.on('console', m => { if (m.type() === 'error' && !/XNNPACK/.test(m.text())) errors.push('panel console: ' + m.text()); });
 panel.on('dialog', d => d.accept());
 await panel.goto(`chrome-extension://${id}/panel.html`);
-const state = async () => { await panel.waitForTimeout(500); return panel.evaluate(async () => (await chrome.storage.session.get('cn')).cn); };
+const state = async () => { await panel.waitForTimeout(500); return panel.evaluate(() => JSON.parse(JSON.stringify(globalThis.__cnState()))); };
+const stored = () => panel.evaluate(async () => (await chrome.storage.session.get(['cn', 'cnImg'])));
 const shot = n => panel.screenshot({ path: path.join(SHOTS, n), fullPage: true });
 const idle = () => panel.waitForFunction(() => !document.querySelector('.spin'), null, { timeout: 120000 });
 
@@ -64,6 +65,8 @@ await panel.click('[data-step=read]');
 await panel.click('[data-act=prepClaude]'); await idle();
 S = await state();
 check(S.claudeDl != null, 'PDF for Claude saved to Downloads');
+const st = await stored();
+check(st.cnImg && Object.keys(st.cnImg.pages).length === 5 && st.cnImg.photo, 'scans + photo kept in session memory (' + Math.round(JSON.stringify(st).length / 1024) + ' KB of 10 MB)');
 const reply = '```json\n' + JSON.stringify({
   tenth_certificate: { name: 'ANITA ROSE K', father_name: 'THOMAS K J', mother_name: 'MARY T K', date_of_birth: '01/01/2007', year_of_passing: 'March 2023' },
   tenth_marksheet: { name: 'ANITA ROSE K', total_obtained: 395, total_maximum: 650, year_of_passing: '2023' },
@@ -80,6 +83,24 @@ check(S.claudeDl == null, 'Claude PDF deleted from Downloads after the answer wa
 check(S.details.firstName === 'ANITA' && S.details.middleName === 'ROSE' && S.details.lastName === 'K', 'name split ANITA / ROSE / K');
 await shot('4-review.png');
 await panel.click('[data-act=confirm]');
+
+// close + reopen the panel: scans, photo and details must survive
+await panel.waitForTimeout(1500);
+await panel.reload();
+await panel.waitForSelector('canvas[data-labcanvas=cert10]', { timeout: 30000 });
+await idle();
+check(await panel.locator('text=Pages are not kept').count() === 0, 'scanned pages survive closing/reopening the panel');
+S = await state();
+check(S.files.sign && S.files.aadhaar, 'files were built automatically on opening step 5');
+await panel.click('[data-step=start]');
+check(await panel.locator('[data-act=photoEdit]:not([disabled])').count() === 1, 'photo crop can still be adjusted after reopening');
+await panel.click('[data-step=labels]');
+await panel.waitForSelector('canvas[data-labcanvas=cert10]');
+await panel.click('[data-lab-rot=marks10]');
+await panel.waitForTimeout(300);
+S = await state();
+check(S.labels.marks10.rot === 90, 'label can be turned 90°');
+await panel.click('[data-lab-rot=marks10]'); await panel.click('[data-lab-rot=marks10]'); await panel.click('[data-lab-rot=marks10]');
 
 // ---- 5 Labels & files
 await panel.waitForSelector('canvas[data-labcanvas=cert10]');
@@ -170,7 +191,8 @@ await shot('6-documents.png'); await pp.screenshot({ path: path.join(SHOTS, '6-d
 await panel.bringToFront();
 await panel.click('#btnDone');
 await panel.waitForTimeout(500);
-check(!(await state()), 'Done wiped the student from session storage');
+const left = await stored();
+check(!left.cn && !left.cnImg, 'Done wiped the student from session storage');
 
 console.log('errors:', errors);
 check(!errors.length, 'no page errors');

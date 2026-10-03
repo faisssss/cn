@@ -47,23 +47,59 @@ const fresh = () => ({
 let S = fresh();
 const M = { photo: null, pages: {}, labelImgs: {}, pageKind: null, tabId: null, busy: '' }; // memory only
 let settings = { routineAuto: true, labelPos: {} };
-globalThis.__cnMem = M; // for tests                                          // no student data
+globalThis.__cnMem = M; globalThis.__cnState = () => S; // for tests
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// chrome.storage.session lives in memory only (never on disk) and is cleared when Chrome closes.
+// Built document files are not stored (they are rebuilt from the pages when needed) to stay within its 10 MB.
 let saveT = 0;
 function save() {
   clearTimeout(saveT);
   saveT = setTimeout(async () => {
-    try { await chrome.storage.session.set({ cn: S }); }
+    const keep = {}; for (const k of ['photo', 'b10', 'b12']) if (S.files[k]) keep[k] = S.files[k];
+    try { await chrome.storage.session.set({ cn: { ...S, files: keep } }); }
     catch (e) { console.warn('session save failed', e); }
   }, 300);
 }
+let imgT = 0, warnedQuota = false;
+function saveImages() {
+  clearTimeout(imgT);
+  imgT = setTimeout(async () => {
+    const pages = {};
+    for (const [k, list] of Object.entries(M.pages)) pages[k] = (list || []).map(p => IMG.scaleTo(p.cur, 2000).toDataURL('image/jpeg', 0.85));
+    const photo = M.photo ? IMG.scaleTo(M.photo, 1600).toDataURL('image/jpeg', 0.9) : null;
+    try { await chrome.storage.session.set({ cnImg: { pages, photo } }); }
+    catch (e) {
+      console.warn('image save failed', e);
+      if (!warnedQuota) { warnedQuota = true; toast('Too much to keep if the panel is closed – keep the panel open until the files are attached.', 7000); }
+    }
+  }, 500);
+}
+async function loadImages() {
+  try {
+    const { cnImg } = await chrome.storage.session.get('cnImg');
+    if (!cnImg) return;
+    for (const [k, urls] of Object.entries(cnImg.pages || {})) {
+      M.pages[k] = [];
+      for (const u of urls) { const c = await IMG.canvasFromURL(u); M.pages[k].push({ orig: c, cur: c, warn: [], thumb: IMG.scaleTo(c, 200).toDataURL('image/jpeg', 0.7) }); }
+    }
+    if (cnImg.photo) {
+      M.photo = await IMG.canvasFromURL(cnImg.photo);
+      const p = S.photo;   // the kept copy may be smaller than the original: scale the crop to match
+      if (p && p.srcW && p.srcW !== M.photo.width) {
+        const k = M.photo.width / p.srcW;
+        p.rect = { ...p.rect, x: p.rect.x * k, y: p.rect.y * k, w: p.rect.w * k, h: p.rect.h * k }; p.srcW = M.photo.width;
+      }
+    }
+  } catch (e) { console.warn('could not restore images', e); }
+}
 async function load() {
   try { const r = await chrome.storage.session.get('cn'); if (r.cn) S = Object.assign(fresh(), r.cn); } catch (e) { /* ignore */ }
+  await loadImages();
   try { const r = await chrome.storage.local.get('settings'); if (r.settings) settings = Object.assign(settings, r.settings); } catch (e) { /* ignore */ }
 }
 const saveSettings = () => chrome.storage.local.set({ settings }).catch(() => {});
@@ -249,14 +285,14 @@ function vReview() {
 // ---- 5 Labels & files
 function labelState(d) {
   if (!S.labels[d.key]) {
-    const pos = settings.labelPos[d.key] || { x: 0.05, y: 0.015, w: d.w };
-    S.labels[d.key] = { ...pos, on: true, space: null };
+    const pos = settings.labelPos[d.key] || { x: 0.05, y: 0.015, w: d.w, rot: 0 };
+    S.labels[d.key] = { rot: 0, ...pos, on: true, space: null };
   }
   return S.labels[d.key];
 }
 function vLabels() {
   const f = S.files;
-  const canBuild = DOCS.every(d => M.pages[d.key] && M.pages[d.key].length) && S.photo && S.bvc.b10 && S.bvc.b12;
+  const canBuild = canBuildFiles();
   const slotRow = s => {
     const file = f[s.file];
     return `<div class="s"><b>${s.row}</b><span class="t">${s.title}${s.docNumber ? ` <span class="muted small">+ "${s.docNumber}"</span>` : ''}</span>
@@ -268,7 +304,7 @@ function vLabels() {
     ${LABELLED.map(d => {
       const l = labelState(d), ok = M.pages[d.key] && M.pages[d.key].length;
       return `<div class="card"><div class="row"><b>${d.name}</b><span class="muted small">Sl. No ${d.slots}</span><span class="spacer"></span>
-        ${l.on ? `<button class="small" data-lab-off="${d.key}">✕ Remove label</button>` : `<button class="small" data-lab-on="${d.key}">+ Add label</button>`}</div>
+        ${l.on ? `<button class="small" data-lab-rot="${d.key}" title="Turn the label 90°">⟳ Turn label</button> <button class="small" data-lab-off="${d.key}">✕ Remove label</button>` : `<button class="small" data-lab-on="${d.key}">+ Add label</button>`}</div>
         ${ok ? `<div class="labelwrap"><canvas data-labcanvas="${d.key}"></canvas></div>
           ${l.on ? `<label class="toggle small"><input type="checkbox" data-lab-space="${d.key}" ${l.space ? 'checked' : ''}> Add white space on top for the label</label>` : ''}`
           : '<div class="muted small">Add this document in step 2 to place its label.</div>'}
@@ -282,6 +318,10 @@ function vLabels() {
   </div>
   ${doneMap().labels ? next('pariksha', 'Go to Pariksha') : ''}`;
 }
+function canBuildFiles() { return DOCS.every(d => M.pages[d.key] && M.pages[d.key].length) && !!S.photo && !!S.bvc.b10 && !!S.bvc.b12; }
+const allBuilt = () => ['photo', 'sign', 'cert10', 'marks10', 'cert12', 'aadhaar', 'b10', 'b12'].every(k => S.files[k]);
+// open step 5 or attach → build whatever is missing, without asking
+async function ensureBuilt() { if (!allBuilt() && canBuildFiles() && !M.busy) await buildFiles({ quiet: true }); }
 const limitFor = k => (k === 'photo' ? IMG.LIMITS.photo : k === 'sign' ? IMG.LIMITS.sign : IMG.LIMITS.pdf);
 
 // ---- 6 Pariksha
@@ -292,8 +332,8 @@ function vPariksha() {
   let action = '';
   if (!k) action = `<p>Open Pariksha in this window.</p><button class="primary big" data-act="openPariksha">Open Pariksha</button>`;
   else if (fillable) action = `<button class="primary big" data-act="fill">${S.pariksha[k] ? 'Re-fill this page' : 'Fill this page'}</button>`;
-  else if (k === 'documents') action = `<button class="primary big" data-act="attach" ${doneMap().labels ? '' : 'disabled'}>Attach all 11 files</button>
-      ${doneMap().labels ? '' : '<div class="warn">Build the files first (step 5).</div>'}`;
+  else if (k === 'documents') action = `<button class="primary big" data-act="attach" ${allBuilt() || canBuildFiles() ? '' : 'disabled'}>Attach all 11 files</button>
+      ${allBuilt() || canBuildFiles() ? '' : '<div class="warn">Some documents are missing – check steps 1 and 2.</div>'}`;
   else if (ROUTINE.includes(k)) action = `<button class="big" data-act="routine">${routineLabel(k)}</button>`;
   else action = '<p class="muted">Not a page CN Desk fills.</p>';
   return `
@@ -353,8 +393,12 @@ function vFinal(k) {
 document.addEventListener('click', async e => {
   const t = e.target.closest('button, [data-edit], input[type=checkbox][data-act]');
   if (!t) return;
-  if (t.dataset.step) { S.step = t.dataset.step; save(); render(); if (S.step === 'pariksha') refreshTab(); return; }
-  if (t.dataset.go) { S.step = t.dataset.go; save(); render(); if (S.step === 'pariksha') refreshTab(); window.scrollTo(0, 0); return; }
+  if (t.dataset.step || t.dataset.go) {
+    S.step = t.dataset.step || t.dataset.go; save(); render(); window.scrollTo(0, 0);
+    if (S.step === 'pariksha') refreshTab();
+    if (S.step === 'labels' || S.step === 'pariksha') ensureBuilt();
+    return;
+  }
   if (t.dataset.edit) { const [k, i] = t.dataset.edit.split(':'); return openPageEditor(k, +i); }
   if (t.dataset.rot) {
     const [k, i, dir] = t.dataset.rot.split(':'), p = M.pages[k][+i];
@@ -362,10 +406,16 @@ document.addEventListener('click', async e => {
     p.warn = p.warn.filter(w => !/sideways/.test(w));
     storeMeta(k); invalidateFiles([k]); save(); return render();
   }
-  if (t.dataset.clear) { delete M.pages[t.dataset.clear]; delete S.docMeta[t.dataset.clear]; invalidateFiles(); save(); return render(); }
+  if (t.dataset.clear) { delete M.pages[t.dataset.clear]; delete S.docMeta[t.dataset.clear]; invalidateFiles([t.dataset.clear]); saveImages(); save(); return render(); }
   if (t.dataset.dismiss) { S.dismissed.push(t.dataset.dismiss); save(); return render(); }
-  if (t.dataset.labOff) { labelState(byKey(t.dataset.labOff)).on = false; invalidateFiles(); save(); return render(); }
-  if (t.dataset.labOn) { labelState(byKey(t.dataset.labOn)).on = true; invalidateFiles(); save(); return render(); }
+  if (t.dataset.labOff) { labelState(byKey(t.dataset.labOff)).on = false; labelsChanged(t.dataset.labOff); return render(); }
+  if (t.dataset.labOn) { labelState(byKey(t.dataset.labOn)).on = true; labelsChanged(t.dataset.labOn); return render(); }
+  if (t.dataset.labRot) {
+    const d = byKey(t.dataset.labRot), l = labelState(d);
+    l.rot = ((l.rot || 0) + 90) % 360; l.x = Math.min(l.x, 0.9); l.y = Math.min(l.y, 0.9);
+    settings.labelPos[d.key] = { x: l.x, y: l.y, w: l.w, rot: l.rot }; saveSettings();
+    labelsChanged(d.key); return render();
+  }
   const act = t.dataset.act;
   try {
     if (act === 'photoEdit') return openPhotoEditor();
@@ -373,7 +423,7 @@ document.addEventListener('click', async e => {
     if (act === 'copyPrompt') { await navigator.clipboard.writeText(CLAUDE_PROMPT); return toast('Instruction copied'); }
     if (act === 'openClaude') return chrome.tabs.create({ url: 'https://claude.ai/new' });
     if (act === 'useReply') return useReply();
-    if (act === 'confirm') { S.confirmed = true; S.step = 'labels'; save(); render(); window.scrollTo(0, 0); return; }
+    if (act === 'confirm') { S.confirmed = true; S.step = 'labels'; save(); render(); window.scrollTo(0, 0); return ensureBuilt(); }
     if (act === 'build') return buildFiles();
     if (act === 'openPariksha') return chrome.tabs.create({ url: PARIKSHA });
     if (act === 'fill') return fillPage();
@@ -403,7 +453,7 @@ document.addEventListener('change', async e => {
   if (t.dataset.d) { render(); return; }               // re-run checks after an edit
   if (t.dataset.o) { S.options[t.dataset.o] = t.value; save(); return; }
   if (t.dataset.stage) { S.stage = t.dataset.stage; save(); return render(); }
-  if (t.dataset.labSpace) { labelState(byKey(t.dataset.labSpace)).space = t.checked; invalidateFiles(); save(); return render(); }
+  if (t.dataset.labSpace) { labelState(byKey(t.dataset.labSpace)).space = t.checked; labelsChanged(t.dataset.labSpace); return render(); }
   if (t.type === 'radio' && t.dataset.c) return;
   if (t.type !== 'file' || !t.files.length) return;
   const files = [...t.files]; t.value = '';
@@ -436,7 +486,7 @@ function invalidateFiles(keys) { (keys || ['sign', 'cert10', 'marks10', 'cert12'
 async function addPhoto(file) {
   busy('Finding the face…');
   const [c] = await IMG.fileToCanvases(file);
-  M.photo = c;
+  M.photo = c; saveImages();
   const r = await IMG.autoPhotoCrop(c);
   await setPhotoCrop(r);
   M.busy = ''; render();
@@ -444,7 +494,7 @@ async function addPhoto(file) {
 }
 async function setPhotoCrop(r) {
   const blob = await IMG.photoOut(M.photo, r);
-  S.photo = { rect: r, found: r.found, url: await IMG.blobToDataURL(blob), kb: IMG.kb(blob.size) };
+  S.photo = { rect: r, found: r.found, srcW: M.photo.width, url: await IMG.blobToDataURL(blob), kb: IMG.kb(blob.size) };
   S.files.photo = { url: S.photo.url, kb: S.photo.kb, type: 'image/jpeg' };
   save();
 }
@@ -471,6 +521,7 @@ async function processPages(key, canvases) {
 function storeMeta(key) {
   const p = M.pages[key] || [];
   S.docMeta[key] = { pages: p.length, thumbs: p.map(x => x.thumb) };
+  saveImages();
 }
 async function addToDoc(key, files, replace) {
   busy('Reading and cleaning up pages…');
@@ -622,52 +673,62 @@ async function drawAllLabelCanvases() {
   }
 }
 function setupLabelCanvas(cv, d, page, img) {
-  const base = IMG.scaleTo(page, 800), l = labelState(d);
+  const base = IMG.scaleTo(page, 800), l = labelState(d), W = base.width, H = base.height;
   let mode = null, start = null;
   const geom = () => {
-    const lw = l.w * base.width, lh = lw * img.naturalHeight / img.naturalWidth;
-    const strip = l.space ? Math.round(lh + base.width * 0.03) : 0;
-    return { lw, lh, strip, x: l.x * base.width, y: l.space ? base.width * 0.015 : l.y * base.height + strip };
+    const dm = IMG.labelDims(W, img, l);
+    const strip = l.space ? Math.round(dm.bh + W * 0.03) : 0;
+    return { ...dm, strip, x: l.x * W, y: l.space ? W * 0.015 : l.y * H + strip };
   };
+  const hs = Math.max(14, W * 0.03);
   const draw = () => {
     const g = geom();
-    cv.width = base.width; cv.height = base.height + g.strip;
+    cv.width = W; cv.height = H + g.strip;
     const x = cv.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, cv.width, cv.height); x.drawImage(base, 0, g.strip);
     if (!l.on) return;
-    x.drawImage(img, g.x, g.y, g.lw, g.lh);
-    x.strokeStyle = 'rgba(31,79,209,.8)'; x.setLineDash([5, 4]); x.lineWidth = 2; x.strokeRect(g.x, g.y, g.lw, g.lh); x.setLineDash([]);
-    const hs = Math.max(14, base.width * 0.03);
-    x.fillStyle = '#1f4fd1'; x.beginPath(); x.moveTo(g.x + g.lw, g.y + g.lh - hs); x.lineTo(g.x + g.lw, g.y + g.lh); x.lineTo(g.x + g.lw - hs, g.y + g.lh); x.fill();
-    x.fillStyle = '#b42318'; x.fillRect(g.x + g.lw - hs, g.y, hs, hs); x.fillStyle = '#fff'; x.font = `bold ${hs * 0.8}px sans-serif`; x.fillText('✕', g.x + g.lw - hs * 0.85, g.y + hs * 0.8);
+    IMG.drawLabel(x, img, g.x, g.y, g, l.rot);
+    x.strokeStyle = 'rgba(31,79,209,.8)'; x.setLineDash([5, 4]); x.lineWidth = 2; x.strokeRect(g.x, g.y, g.bw, g.bh); x.setLineDash([]);
+    x.fillStyle = '#1f4fd1'; x.beginPath(); x.moveTo(g.x + g.bw, g.y + g.bh - hs); x.lineTo(g.x + g.bw, g.y + g.bh); x.lineTo(g.x + g.bw - hs, g.y + g.bh); x.fill();
+    x.fillStyle = '#b42318'; x.fillRect(g.x + g.bw - hs, g.y, hs, hs); x.fillStyle = '#fff'; x.font = `bold ${hs * 0.8}px sans-serif`; x.fillText('✕', g.x + g.bw - hs * 0.85, g.y + hs * 0.8);
   };
   const pt = ev => { const b = cv.getBoundingClientRect(); return { x: (ev.clientX - b.left) * cv.width / b.width, y: (ev.clientY - b.top) * cv.height / b.height }; };
   cv.onpointerdown = ev => {
     if (!l.on) return;
-    const p = pt(ev), g = geom(), hs = Math.max(14, base.width * 0.03);
-    if (p.x > g.x + g.lw - hs && p.x < g.x + g.lw && p.y > g.y && p.y < g.y + hs) { l.on = false; invalidateFiles([d.key]); save(); return render(); }
-    if (p.x > g.x + g.lw - hs * 1.5 && p.x < g.x + g.lw + 4 && p.y > g.y + g.lh - hs * 1.5 && p.y < g.y + g.lh + 4) mode = 'size';
-    else if (p.x >= g.x && p.x <= g.x + g.lw && p.y >= g.y && p.y <= g.y + g.lh) mode = 'move';
+    const p = pt(ev), g = geom();
+    if (p.x > g.x + g.bw - hs && p.x < g.x + g.bw && p.y > g.y && p.y < g.y + hs) { l.on = false; labelsChanged(d.key); return render(); }
+    if (p.x > g.x + g.bw - hs * 1.5 && p.x < g.x + g.bw + 4 && p.y > g.y + g.bh - hs * 1.5 && p.y < g.y + g.bh + 4) mode = 'size';
+    else if (p.x >= g.x && p.x <= g.x + g.bw && p.y >= g.y && p.y <= g.y + g.bh) mode = 'move';
     else return;
     start = { p, l: { ...l } }; cv.setPointerCapture(ev.pointerId);
   };
   cv.onpointermove = ev => {
     if (!mode) return;
-    const p = pt(ev), dx = (p.x - start.p.x) / base.width, dy = (p.y - start.p.y) / base.height;
-    if (mode === 'move') { l.x = clamp(start.l.x + dx, 0, 1 - l.w); if (!l.space) l.y = clamp(start.l.y + dy, 0, 0.97); }
-    else l.w = clamp(start.l.w + dx, 0.15, 1 - l.x);
+    const p = pt(ev), dx = (p.x - start.p.x) / W, dy = (p.y - start.p.y) / H, g = geom();
+    if (mode === 'move') { l.x = clamp(start.l.x + dx, 0, Math.max(0, 1 - g.bw / W)); if (!l.space) l.y = clamp(start.l.y + dy, 0, Math.max(0, 1 - g.bh / H)); }
+    else {
+      const side = ((l.rot || 0) % 180) !== 0;
+      l.w = clamp(start.l.w + (side ? (p.y - start.p.y) / W : dx), 0.08, 1.2);
+    }
     draw();
   };
   cv.onpointerup = () => {
     if (!mode) return; mode = null;
-    settings.labelPos[d.key] = { x: l.x, y: l.y, w: l.w }; saveSettings();
-    invalidateFiles([d.key]); save(); refreshStepsOnly();
-    $$('.slotlist .s').length && render();
+    settings.labelPos[d.key] = { x: l.x, y: l.y, w: l.w, rot: l.rot || 0 }; saveSettings();
+    labelsChanged(d.key); refreshStepsOnly();
   };
   draw();
 }
+// a label was moved/turned/removed: rebuild that file shortly after
+let rebuildT = 0;
+function labelsChanged(key) {
+  invalidateFiles([key]); save();
+  clearTimeout(rebuildT);
+  rebuildT = setTimeout(() => { if (S.step === 'labels') buildFiles({ quiet: true }); }, 1200);
+}
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-async function buildFiles() {
+async function buildFiles({ quiet = false } = {}) {
+  if (!canBuildFiles()) return;
   busy('Building files…');
   // signature
   const sigBlob = await IMG.jpegUnder(IMG.scaleTo(M.pages.sign[0].cur, 900), IMG.LIMITS.sign);
@@ -681,6 +742,7 @@ async function buildFiles() {
   }
   M.busy = ''; save(); render();
   const over = Object.entries(S.files).filter(([k, f]) => f.kb * 1024 > limitFor(k));
+  if (quiet && !over.length) return;
   toast(over.length ? `Some files are over the limit: ${over.map(o => o[0]).join(', ')}` : 'All files built and under the limits ✓', 5000);
 }
 
@@ -729,6 +791,8 @@ async function fillPage() {
 async function attachFiles() {
   if (!S.confirmed) return toast('Confirm the details in step 4 first.', 4000);
   if (S.pariksha.documents && !confirm('Attach all files again?')) return;
+  await ensureBuilt();
+  if (!allBuilt()) return toast('Some files are missing – check steps 1, 2 and 5.', 5000);
   busy('Attaching files…');
   const files = SLOTS.map(s => {
     const f = S.files[s.file], ext = f.type === 'application/pdf' ? 'pdf' : 'jpg';
@@ -772,7 +836,8 @@ $('#btnDone').addEventListener('click', async () => {
   await removeClaudeDownload();
   try { await navigator.clipboard.writeText(''); } catch (e) { /* ignore */ }
   S = fresh(); M.photo = null; M.pages = {}; M.busy = '';
-  await chrome.storage.session.remove('cn').catch(() => {});
+  clearTimeout(imgT); clearTimeout(saveT);
+  await chrome.storage.session.remove(['cn', 'cnImg']).catch(() => {});
   render(); window.scrollTo(0, 0);
   toast('Wiped. Ready for the next student.');
 });
@@ -781,4 +846,5 @@ $('#btnDone').addEventListener('click', async () => {
 
 await load();
 render();
+if (S.step === 'labels') ensureBuilt();
 refreshTab();
