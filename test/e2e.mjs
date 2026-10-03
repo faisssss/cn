@@ -113,6 +113,9 @@ S = await state();
 const lim = { photo: 195, sign: 70 };
 for (const [k, f] of Object.entries(S.files)) check(f.kb <= (lim[k] || 500), `${k} file ${f.kb} KB within limit`);
 check(Object.keys(S.files).length === 8, 'all 8 distinct files built');
+const aadPage = await panel.evaluate(() => { const c = globalThis.__cnMem.pages.aadhaar[0].cur; return c.height / c.width; });
+check(aadPage > 1.3, `Aadhaar page kept whole, not cropped (height/width ${aadPage.toFixed(2)})`);
+check(await panel.locator('[data-lab-space]').count() === 0, 'no "white space on top" option');
 await shot('5-labels.png');
 // save the built Aadhaar PDF for a look
 fs.writeFileSync(path.join(SHOTS, 'aadhaar-built.pdf'), Buffer.from(S.files.aadhaar.url.split(',')[1], 'base64'));

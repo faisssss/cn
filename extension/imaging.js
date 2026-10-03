@@ -226,13 +226,13 @@ function faceScoreTiled(det, page) {
   return best;
 }
 
-export async function autoProcess(c, { hasPhoto = false } = {}) {
+export async function autoProcess(c, { hasPhoto = false, cropToContent = true } = {}) {
   let o = trimDarkEdges(c);
   const up = await uprightPage(o, hasPhoto);
   o = up.canvas;
   const a = deskewAngle(o);
   if (Math.abs(a) >= 0.25) o = rotateDeg(o, a);
-  o = crop(o, contentBox(o));
+  if (cropToContent) o = crop(o, contentBox(o));
   o = whiten(o);
   const q = quality(o);
   if (up.turned && !up.sure) q.warn.unshift('Page was sideways and has been turned – check it is the right way up');

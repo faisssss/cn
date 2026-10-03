@@ -15,6 +15,8 @@ const DOCS = [
 ];
 const LABELLED = DOCS.filter(d => d.label);
 const HAS_PHOTO = ['cert10', 'cert12', 'aadhaar']; // documents with the student's photo on them
+const KEEP_WHOLE_PAGE = ['aadhaar'];              // Aadhaar page: label space on top + blank below stay as they are
+const procOpts = key => ({ hasPhoto: HAS_PHOTO.includes(key), cropToContent: !KEEP_WHOLE_PAGE.includes(key) });
 const SLOTS = [
   { row: 1, title: 'Applicant Photograph', file: 'photo' },
   { row: 2, title: 'Applicant Signature', file: 'sign' },
@@ -286,7 +288,7 @@ function vReview() {
 function labelState(d) {
   if (!S.labels[d.key]) {
     const pos = settings.labelPos[d.key] || { x: 0.05, y: 0.015, w: d.w, rot: 0 };
-    S.labels[d.key] = { rot: 0, ...pos, on: true, space: null };
+    S.labels[d.key] = { rot: 0, ...pos, on: true, space: false };
   }
   return S.labels[d.key];
 }
@@ -306,7 +308,7 @@ function vLabels() {
       return `<div class="card"><div class="row"><b>${d.name}</b><span class="muted small">Sl. No ${d.slots}</span><span class="spacer"></span>
         ${l.on ? `<button class="small" data-lab-rot="${d.key}" title="Turn the label 90°">⟳ Turn label</button> <button class="small" data-lab-off="${d.key}">✕ Remove label</button>` : `<button class="small" data-lab-on="${d.key}">+ Add label</button>`}</div>
         ${ok ? `<div class="labelwrap"><canvas data-labcanvas="${d.key}"></canvas></div>
-          ${l.on ? `<label class="toggle small"><input type="checkbox" data-lab-space="${d.key}" ${l.space ? 'checked' : ''}> Add white space on top for the label</label>` : ''}`
+`
           : '<div class="muted small">Add this document in step 2 to place its label.</div>'}
       </div>`;
     }).join('')}
@@ -453,7 +455,6 @@ document.addEventListener('change', async e => {
   if (t.dataset.d) { render(); return; }               // re-run checks after an edit
   if (t.dataset.o) { S.options[t.dataset.o] = t.value; save(); return; }
   if (t.dataset.stage) { S.stage = t.dataset.stage; save(); return render(); }
-  if (t.dataset.labSpace) { labelState(byKey(t.dataset.labSpace)).space = t.checked; labelsChanged(t.dataset.labSpace); return render(); }
   if (t.type === 'radio' && t.dataset.c) return;
   if (t.type !== 'file' || !t.files.length) return;
   const files = [...t.files]; t.value = '';
@@ -513,7 +514,7 @@ async function processPages(key, canvases) {
   for (const c of canvases) {
     let cur, warn = [];
     if (key === 'sign') cur = IMG.signatureProcess(c);
-    else { const r = await IMG.autoProcess(c, { hasPhoto: HAS_PHOTO.includes(key) }); cur = r.canvas; warn = r.warn; }
+    else { const r = await IMG.autoProcess(c, procOpts(key)); cur = r.canvas; warn = r.warn; }
     out.push({ orig: c, cur, warn, thumb: IMG.scaleTo(cur, 200).toDataURL('image/jpeg', 0.7) });
   }
   return out;
@@ -571,7 +572,7 @@ function openPageEditor(key, idx) {
     ['⟲ Rotate', () => { page.cur = IMG.rotate90(page.cur, -1); sel = null; update(); draw(); }],
     ['⟳ Rotate', () => { page.cur = IMG.rotate90(page.cur, 1); sel = null; update(); draw(); }],
     ['✂ Apply crop', () => { if (!sel) return toast('Drag a box on the page first'); const r = normR(sel); if (r.w < 20 || r.h < 20) return; page.cur = IMG.crop(page.cur, r); sel = null; update(); draw(); }],
-    ['Auto clean-up', async () => { const r = key === 'sign' ? { canvas: IMG.signatureProcess(page.orig), warn: [] } : await IMG.autoProcess(page.orig, { hasPhoto: HAS_PHOTO.includes(key) }); page.cur = r.canvas; page.warn = r.warn; sel = null; update(); draw(); }],
+    ['Auto clean-up', async () => { const r = key === 'sign' ? { canvas: IMG.signatureProcess(page.orig), warn: [] } : await IMG.autoProcess(page.orig, procOpts(key)); page.cur = r.canvas; page.warn = r.warn; sel = null; update(); draw(); }],
     ['Undo all (original scan)', () => { page.cur = IMG.cloneCanvas(page.orig); sel = null; update(); draw(); }],
   ], 'Drag on the page to select what to keep, then Apply crop.', () => render());
   cv.onpointerdown = ev => { const p = pt(ev); sel = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }; drag = true; cv.setPointerCapture(ev.pointerId); };
@@ -668,7 +669,7 @@ async function labelImg(name) {
 async function drawAllLabelCanvases() {
   for (const cv of $$('canvas[data-labcanvas]')) {
     const d = byKey(cv.dataset.labcanvas), page = M.pages[d.key][0].cur, img = await labelImg(d.label), l = labelState(d);
-    if (l.space == null) { l.space = l.on && IMG.inkUnder(page, img, l); save(); if (l.space) { render(); return; } }
+    l.space = false;
     setupLabelCanvas(cv, d, page, img);
   }
 }
