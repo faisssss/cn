@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "CN Desk",
+  "version": "0.1.0",
+  "description": "Prepares documents and fills DGCA Pariksha Computer Number applications. Nothing about students is saved.",
+  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "action": { "default_title": "Open CN Desk" },
+  "side_panel": { "default_path": "panel.html" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["sidePanel", "storage", "tabs", "scripting", "downloads", "clipboardWrite"],
+  "host_permissions": ["https://pariksha.dgca.gov.in/*"],
+  "content_scripts": [{
+    "matches": ["https://pariksha.dgca.gov.in/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}

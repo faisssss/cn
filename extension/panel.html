@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CN Desk</title>
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">CN Desk <span id="who" class="who"></span></div>
+  <button id="btnDone" class="ghost small" title="Wipe this student and start fresh">Done</button>
+</header>
+<nav id="steps" class="steps"></nav>
+<div id="banner" class="banner hidden"></div>
+<main id="view"></main>
+
+<!-- full-panel editors -->
+<div id="overlay" class="overlay hidden">
+  <div class="ov-head"><b id="ovTitle"></b><span class="spacer"></span><button id="ovClose" class="primary small">Done</button></div>
+  <div id="ovTools" class="ov-tools"></div>
+  <div class="ov-canvas"><canvas id="ovCanvas"></canvas></div>
+  <p id="ovHint" class="muted small"></p>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="lib/pdf.min.js"></script>
+<script src="lib/jspdf.umd.min.js"></script>
+<script type="module" src="panel.js"></script>
+</body>
+</html>
