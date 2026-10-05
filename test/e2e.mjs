@@ -179,7 +179,7 @@ await shot('6-flight.png'); await pp.screenshot({ path: path.join(SHOTS, '6-flig
 await pp.goto('https://pariksha.dgca.gov.in/Form/Document');
 await panel.waitForFunction(() => document.querySelector('.page-now')?.textContent.includes('Documents'));
 await panel.click('[data-act=attach]');
-await panel.waitForFunction(() => document.querySelector('.report h3'), null, { timeout: 60000 });
+await panel.waitForFunction(() => document.querySelector('.report h3'), null, { timeout: 180000 });
 const docs = await pp.evaluate(() => [...Array(11)].map((_, i) => {
   const inp = document.getElementById(`DocumentTable-${i + 1}uploadfile`), tr = inp.closest('tr');
   const num = tr.querySelector('input[placeholder="Document Number"]');
@@ -187,6 +187,8 @@ const docs = await pp.evaluate(() => [...Array(11)].map((_, i) => {
 }));
 console.log(docs);
 check(docs.every(d => d[0]), 'all 11 upload boxes have a file');
+const views = await pp.evaluate(() => [...Array(11)].map((_, i) => !!document.getElementById(`DocumentTable-${i + 1}uploadfile`).closest('tr').querySelector('a[title="click to view"]')));
+check(views.every(Boolean) && await pp.evaluate(() => window.__uploads) === 11, 'Upload pressed in the preview window for all 11 – every row shows "click to view"');
 check(docs[5][2] === 'BVC already in DGCA' && docs[7][2] === 'BVC already in DGCA' && docs[2][2] === '', 'BVC document numbers filled, others empty');
 await shot('6-documents.png'); await pp.screenshot({ path: path.join(SHOTS, '6-documents-page.png'), fullPage: true });
 

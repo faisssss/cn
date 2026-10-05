@@ -334,7 +334,8 @@ function vPariksha() {
   let action = '';
   if (!k) action = `<p>Open Pariksha in this window.</p><button class="primary big" data-act="openPariksha">Open Pariksha</button>`;
   else if (fillable) action = `<button class="primary big" data-act="fill">${S.pariksha[k] ? 'Re-fill this page' : 'Fill this page'}</button>`;
-  else if (k === 'documents') action = `<button class="primary big" data-act="attach" ${allBuilt() || canBuildFiles() ? '' : 'disabled'}>Attach all 11 files</button>
+  else if (k === 'documents') action = `<button class="primary big" data-act="attach" ${allBuilt() || canBuildFiles() ? '' : 'disabled'}>Upload all 11 files</button>
+      ${rep && rep.failed && rep.failed.length ? '<button class="big" data-act="attachMissing" style="margin-top:6px">Upload only the missing ones</button>' : ''}
       ${allBuilt() || canBuildFiles() ? '' : '<div class="warn">Some documents are missing – check steps 1 and 2.</div>'}`;
   else if (ROUTINE.includes(k)) action = `<button class="big" data-act="routine">${routineLabel(k)}</button>`;
   else action = '<p class="muted">Not a page CN Desk fills.</p>';
@@ -430,6 +431,7 @@ document.addEventListener('click', async e => {
     if (act === 'openPariksha') return chrome.tabs.create({ url: PARIKSHA });
     if (act === 'fill') return fillPage();
     if (act === 'attach') return attachFiles();
+    if (act === 'attachMissing') return attachFiles(true);
     if (act === 'routine') return routine(true);
     if (act === 'routineToggle') { settings.routineAuto = t.checked; return saveSettings(); }
   } catch (err) { console.error(err); M.busy = ''; render(); toast('Error: ' + err.message, 6000); }
@@ -789,18 +791,18 @@ async function fillPage() {
   if (!rep.error) { S.pariksha[k] = true; if (k === 'register' || k === 'login') S.stage = 'login'; }
   save(); render();
 }
-async function attachFiles() {
+async function attachFiles(onlyMissing = false) {
   if (!S.confirmed) return toast('Confirm the details in step 4 first.', 4000);
-  if (S.pariksha.documents && !confirm('Attach all files again?')) return;
+  if (!onlyMissing && S.pariksha.documents && !confirm('Upload all 11 files again?')) return;
   await ensureBuilt();
   if (!allBuilt()) return toast('Some files are missing – check steps 1, 2 and 5.', 5000);
-  busy('Attaching files…');
+  busy('Uploading files one by one (each one waits for Pariksha to confirm)…');
   const files = SLOTS.map(s => {
     const f = S.files[s.file], ext = f.type === 'application/pdf' ? 'pdf' : 'jpg';
     const b64 = f.url.split(',')[1];
     return { row: s.row, title: s.title, name: `${String(s.row).padStart(2, '0')}_${s.title.replace(/\W+/g, '_')}.${ext}`, type: f.type, b64, size: Math.round(b64.length * 3 / 4), docNumber: s.docNumber };
   });
-  const rep = await send({ cmd: 'attach', files });
+  const rep = await send({ cmd: 'attach', files, onlyMissing });
   M.busy = '';
   S.lastReport = { ...rep, kind: 'documents' };
   if (!rep.error && !rep.failed.length) S.pariksha.documents = true;

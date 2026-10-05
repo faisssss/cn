@@ -40,4 +40,23 @@ if (/Personal_Details/.test(page)) {
     for (const id of ['Country','State']) { $('#p_' + id).val($('#' + id).val()).trigger('change'); }
   });
 }
+if (/\/Form\/Document/.test(page)) {
+  // like the real site: choosing a file opens a preview window; Upload sends it, then "click to view" appears
+  document.querySelectorAll('#DocumentTable a[title="click to view"], #DocumentTable a br').forEach(a => a.remove());
+  document.querySelectorAll('#DocumentTable a').forEach(a => a.remove());
+  let current = null;
+  const modal = document.getElementById('documentmodel');
+  document.querySelectorAll('.uploadtablefile').forEach(inp => inp.addEventListener('change', () => { current = inp; modal.style.display = 'block'; }));
+  document.getElementById('documentmodelcancel').onclick = () => { modal.style.display = 'none'; };
+  document.getElementById('documentmodelupload').onclick = () => {
+    modal.style.display = 'none';
+    const loader = document.getElementById('loader'); loader.style.display = 'block';
+    setTimeout(() => {
+      loader.style.display = 'none';
+      const a = document.createElement('a'); a.title = 'click to view'; a.textContent = 'click to view'; a.href = '#';
+      current.closest('td').appendChild(a);
+      window.__uploads = (window.__uploads || 0) + 1;
+    }, 400);
+  };
+}
 $('.select2').select2();

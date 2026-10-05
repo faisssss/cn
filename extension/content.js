@@ -226,27 +226,68 @@
   }
 
   const b64ToBytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  async function attachFiles(files) {
+  // Pariksha: choosing a file opens a preview window (#documentmodel); the file only reaches DGCA after its
+  // Upload button, and then the row shows "click to view". So: one slot at a time, wait for each.
+  const shown = el => !!el && getComputedStyle(el).display !== 'none' && visible(el);
+  async function waitFor(fn, ms) { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(200); } return null; }
+  const rowHasView = tr => !!tr && [...tr.querySelectorAll('a')].some(a => /click to view/i.test(a.title || a.textContent || ''));
+  function siteMessage() {
+    for (const sel of ['.alertnote', '.stickynote']) {
+      const box = $(sel);
+      if (shown(box)) { const msg = ($('.msg', box) || box).textContent.trim(); const ok = $('button', box); return { msg, ok }; }
+    }
+    return null;
+  }
+  async function attachFiles(files, onlyMissing) {
     const r = makeReport();
     for (const f of files) {
       const input = document.getElementById(`DocumentTable-${f.row}uploadfile`);
       const label = `${f.row}. ${f.title}`;
       if (!input) { r.bad(label, 'upload box not found'); continue; }
+      const tr = input.closest('tr');
+      if (onlyMissing && rowHasView(tr)) { r.ok(`${label} (already uploaded)`, input); continue; }
       const limit = Number(input.getAttribute('docsize')) || 0;
       if (limit && f.size > limit) { r.bad(label, `file is ${Math.round(f.size / 1024)} KB, site allows ${Math.round(limit / 1024)} KB`, input); continue; }
+      if (f.docNumber) {
+        const num = tr && $('input[placeholder="Document Number"]', tr);
+        if (num) { setText(num, f.docNumber); r.ok(`${f.row}. Document number: ${f.docNumber}`, num); }
+        else r.bad(`${f.row}. Document number`, 'box not found');
+      }
+      const hadView = rowHasView(tr);
+      input.scrollIntoView({ block: 'center' });
       const dt = new DataTransfer();
       dt.items.add(new File([b64ToBytes(f.b64)], f.name, { type: f.type }));
       input.files = dt.files;
       fire(input, 'input'); fire(input, 'change');
-      await sleep(900);
-      input.files && input.files.length && input.files[0].name === f.name ? r.ok(label, input) : r.bad(label, 'the site cleared the file – attach it by hand', input);
-      if (f.docNumber) {
-        const num = input.closest('tr') && $('input[placeholder="Document Number"]', input.closest('tr'));
-        if (num) { setText(num, f.docNumber); r.ok(`${f.row}. Document number: ${f.docNumber}`, num); }
-        else r.bad(`${f.row}. Document number`, 'box not found');
+
+      // 1) the preview window with its Upload button (or an error message from the site)
+      const modal = document.getElementById('documentmodel');
+      const opened = await waitFor(() => (shown(modal) && 'modal') || (siteMessage() && 'msg'), 10000);
+      if (opened === 'msg') {
+        const m = siteMessage(); r.bad(label, `site says: "${m.msg}"`, input); m.ok && m.ok.click(); await sleep(300); continue;
       }
+      if (opened === 'modal') {
+        await sleep(600);                                   // let the preview load
+        const up = document.getElementById('documentmodelupload');
+        if (!up) { r.bad(label, 'Upload button not found – press it yourself', input); continue; }
+        up.click();
+      }
+      // 2) wait for the upload to finish: window closed, loading overlay gone
+      await waitFor(() => !shown(modal) && !shown(document.getElementById('loader')), 60000);
+      await sleep(500);
+      const msg = siteMessage();
+      if (msg) {
+        const good = /success|upload/i.test(msg.msg) && !/error|fail|invalid|not/i.test(msg.msg);
+        msg.ok && msg.ok.click(); await sleep(300);
+        if (!good) { r.bad(label, `site says: "${msg.msg}"`, input); continue; }
+      }
+      // 3) "click to view" in the row means DGCA has the file
+      const ok = await waitFor(() => rowHasView(input.closest('tr') || tr), 8000);
+      if (ok) r.ok(hadView ? `${label} (replaced)` : label, input.closest('tr') ? $('input[type=file]', input.closest('tr')) || input : input);
+      else r.bad(label, 'no "click to view" after upload – choose the file and press Upload by hand', input);
     }
-    r.notes.push(`${r.filled.filter(x => !/Document number/.test(x)).length}/${files.length} files attached. Use "click to view" to spot-check, then Save and Next.`);
+    const n = r.filled.filter(x => !/Document number/.test(x)).length;
+    r.notes.push(`${n}/${files.length} files uploaded (each shows "click to view"). Spot-check a few, then Save and Next.`);
     return clean(r);
   }
 
@@ -308,7 +349,7 @@
           if (k === 'login') return reply(fillLogin(msg.data.email));
           return reply({ error: 'This page is not one CN Desk fills.' });
         }
-        if (msg.cmd === 'attach') return reply(kind() === 'documents' ? await attachFiles(msg.files) : { error: 'Open the Documents page first.' });
+        if (msg.cmd === 'attach') return reply(kind() === 'documents' ? await attachFiles(msg.files, msg.onlyMissing) : { error: 'Open the Documents page first.' });
         if (msg.cmd === 'routine') return reply(await doRoutine(kind(), msg.stage));
         reply({ error: 'unknown command' });
       } catch (e) { reply({ error: String(e && e.message || e) }); }
