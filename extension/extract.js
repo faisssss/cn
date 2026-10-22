@@ -218,7 +218,7 @@ export function checkDetails(d, r) {
   }
   if (kerala12 && d.m12max != null && d.m12max !== 1200) add('orange', 'm12max', `12th maximum is ${d.m12max}, not the usual 1200`);
   if (d.pass == null || d.pass === '') add('red', 'pass', 'Passing marks are empty');
-  else if (!kerala12 && Number(d.pass) === 33) add('orange', 'pass', 'Passing marks set to 33 for CBSE/ICSE – change it if you use a different number');
+
   for (const k of ['addr1', 'addr2', 'addr3']) if ((d[k] || '').length > 60) add('orange', k, `${k.replace('addr', 'Address line ')} is long (${d[k].length} characters)`);
 
   if (r) {
