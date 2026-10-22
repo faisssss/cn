@@ -1,23 +1,39 @@
 // CN Desk side panel. One student at a time; nothing is written to disk.
 // Student data lives in memory and in chrome.storage.session (memory-only, cleared when Chrome closes).
 import * as IMG from './imaging.js';
-import { CLAUDE_PROMPT, parseClaudeReply, buildDetails, derived, checkDetails, DEFAULT_OPTIONS, lettersOnly } from './extract.js';
+import { buildPrompt, parseClaudeReply, buildDetails, derived, checkDetails, DEFAULT_OPTIONS, lettersOnly } from './extract.js';
 
 // ---------------------------------------------------------------- constants
 
 const STEPS = [['start', '1 Start'], ['scan', '2 Scan'], ['read', '3 Read'], ['review', '4 Review'], ['labels', '5 Labels & files'], ['pariksha', '6 Pariksha']];
-const DOCS = [
-  { key: 'sign', name: 'Signature sheet' },
-  { key: 'cert10', name: '10th pass certificate', label: 'sl3_5', slots: '3 + 5', w: 0.55 },
-  { key: 'marks10', name: '10th marksheet', label: 'sl4', slots: '4', w: 0.42 },
-  { key: 'cert12', name: '12th certificate', label: 'sl7_9', slots: '7 + 9', w: 0.6 },
-  { key: 'aadhaar', name: 'Aadhaar (card form)', label: 'sl10_11', slots: '10 + 11', w: 0.68 },
-];
-const LABELLED = DOCS.filter(d => d.label);
+// Boards: Kerala State 10th = pass certificate + marksheet (2 sheets), 12th = one sheet.
+//         ICSE 10th and 12th = 2 sheets each.  CBSE 10th and 12th = one sheet each.
+const BOARDS = [['KERALA', 'Kerala State'], ['CBSE', 'CBSE'], ['ICSE', 'ICSE']];
+const BOARD_NAME = {
+  10: { KERALA: 'Kerala Board of Public Examination', CBSE: 'Central Board of Secondary Education', ICSE: 'ICSE' },
+  12: { KERALA: 'Kerala Board of Higher Secondary Education', CBSE: 'Central Board of Secondary Education', ICSE: 'ICSE' },
+};
+function docs() {
+  const b = S.boards || {}, out = [{ key: 'sign', name: 'Signature sheet' }];
+  if (b.b10 === 'CBSE') out.push({ key: 'cert10', name: '10th marksheet + pass certificate (one sheet)', label: 'sl3_4_5', slots: '3, 4, 5', w: 0.5 });
+  else out.push({ key: 'cert10', name: '10th pass certificate', label: 'sl3_5', slots: '3 + 5', w: 0.55 },
+    { key: 'marks10', name: '10th marksheet', label: 'sl4', slots: '4', w: 0.42 });
+  if (b.b12 === 'ICSE') out.push({ key: 'cert12', name: '12th pass certificate', label: 'sl7', slots: '7', w: 0.6 },
+    { key: 'marks12', name: '12th marksheet', label: 'sl9', slots: '9', w: 0.55 });
+  else out.push({ key: 'cert12', name: '12th marksheet + pass certificate (one sheet)', label: 'sl7_9', slots: '7 + 9', w: 0.6 });
+  out.push({ key: 'aadhaar', name: 'Aadhaar (card form)', label: 'sl10_11', slots: '10 + 11', w: 0.68 });
+  return out;
+}
+const labelled = () => docs().filter(d => d.label);
+const ALL_DOC_KEYS = ['sign', 'cert10', 'marks10', 'cert12', 'marks12', 'aadhaar'];
 const HAS_PHOTO = ['cert10', 'cert12', 'aadhaar']; // documents with the student's photo on them
 const KEEP_WHOLE_PAGE = ['aadhaar'];              // Aadhaar page: label space on top + blank below stay as they are
 const procOpts = key => ({ hasPhoto: HAS_PHOTO.includes(key), cropToContent: !KEEP_WHOLE_PAGE.includes(key) });
-const SLOTS = [
+function slots() {
+  const has = k => docs().some(d => d.key === k);
+  return SLOT_LIST.map(s => ({ ...s, file: s.file === 'marks10' && !has('marks10') ? 'cert10' : s.file === 'marks12' && !has('marks12') ? 'cert12' : s.file }));
+}
+const SLOT_LIST = [
   { row: 1, title: 'Applicant Photograph', file: 'photo' },
   { row: 2, title: 'Applicant Signature', file: 'sign' },
   { row: 3, title: 'Date of Birth Proof', file: 'cert10' },
@@ -26,7 +42,7 @@ const SLOTS = [
   { row: 6, title: 'BVC for Xth', file: 'b10', docNumber: 'BVC already in DGCA' },
   { row: 7, title: 'XIIth Pass Certificate', file: 'cert12' },
   { row: 8, title: 'BVC for XIIth', file: 'b12', docNumber: 'BVC already in DGCA' },
-  { row: 9, title: 'XIIth Marksheet', file: 'cert12' },
+  { row: 9, title: 'XIIth Marksheet', file: 'marks12' },
   { row: 10, title: 'UID Aadhar Card', file: 'aadhaar' },
   { row: 11, title: 'Proof of Permanent Address', file: 'aadhaar' },
 ];
@@ -44,7 +60,7 @@ const fresh = () => ({
   step: 'start', contact: { mobile: '', email: '', gender: '' },
   photo: null, bvc: {}, docMeta: {}, reply: null, details: null, edited: {}, dismissed: [],
   options: { ...DEFAULT_OPTIONS }, confirmed: false, labels: {}, files: {}, stage: 'register',
-  pariksha: {}, lastReport: null, claudeDl: null,
+  pariksha: {}, lastReport: null, claudeDl: null, boards: { b10: 'KERALA', b12: 'KERALA' },
 });
 let S = fresh();
 const M = { photo: null, pages: {}, labelImgs: {}, pageKind: null, tabId: null, busy: '' }; // memory only
@@ -110,7 +126,12 @@ function toast(msg, ms = 3000) {
   const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), ms);
 }
-function busy(msg) { M.busy = msg; render(); }
+// progress messages go in a fixed-height bar, so nothing on the page moves when they appear
+function showStatus() {
+  const el = $('#status'); if (!el) return;
+  el.innerHTML = M.busy ? `<span class="spin"></span> ${esc(M.busy)}` : '';
+}
+function busy(msg) { M.busy = msg; showStatus(); }
 
 // ---------------------------------------------------------------- step completion
 
@@ -119,10 +140,10 @@ const validEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e || '');
 const hasPages = k => (M.pages[k] && M.pages[k].length) || (S.docMeta[k] && S.docMeta[k].pages);
 const doneMap = () => ({
   start: validMobile(S.contact.mobile) && validEmail(S.contact.email) && !!S.contact.gender && !!S.photo && !!S.bvc.b10 && !!S.bvc.b12,
-  scan: DOCS.every(d => hasPages(d.key)),
+  scan: docs().every(d => hasPages(d.key)),
   read: !!S.reply,
   review: !!S.confirmed,
-  labels: ['photo', 'sign', 'cert10', 'marks10', 'cert12', 'aadhaar', 'b10', 'b12'].every(k => S.files[k]),
+  labels: allBuilt(),
   pariksha: !!S.pariksha.documents,
 });
 const studentName = () => S.details ? derived(S.details).fullName : '';
@@ -134,7 +155,8 @@ function render() {
   const done = doneMap();
   $('#steps').innerHTML = STEPS.map(([k, t]) => `<button data-step="${k}" class="${S.step === k ? 'on' : ''} ${done[k] ? 'done' : ''}">${t}</button>`).join('');
   const v = { start: vStart, scan: vScan, read: vRead, review: vReview, labels: vLabels, pariksha: vPariksha }[S.step]();
-  $('#view').innerHTML = (M.busy ? `<div class="card"><span class="spin"></span> ${esc(M.busy)}</div>` : '') + v;
+  showStatus();
+  $('#view').innerHTML = v;
   if (S.step === 'labels') drawAllLabelCanvases();
 }
 
@@ -162,6 +184,14 @@ function vStart() {
       <label class="toggle"><input type="radio" name="g" data-c="gender" value="Male" ${c.gender === 'Male' ? 'checked' : ''}> Male (Mr)</label>
       <label class="toggle"><input type="radio" name="g" data-c="gender" value="Female" ${c.gender === 'Female' ? 'checked' : ''}> Female (Ms)</label>
     </div>
+  </div>
+  <div class="card"><h3>Boards</h3>
+    <div class="grid2">
+      ${['b10', 'b12'].map(k => `<label class="f">${k === 'b10' ? '10th' : '12th'} board<select data-board="${k}">
+        ${BOARDS.map(([v, n]) => `<option value="${v}" ${S.boards[k] === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`).join('')}
+    </div>
+    <div class="muted small">10th: ${S.boards.b10 === 'CBSE' ? 'one sheet (marksheet + pass certificate)' : 'pass certificate and marksheet are separate'} ·
+      12th: ${S.boards.b12 === 'ICSE' ? 'pass certificate and marksheet are separate' : 'one sheet (marksheet + pass certificate)'}</div>
   </div>
   <div class="card"><h3>Photo <span class="muted small">631×645, under 195 KB, face ≈ 70%</span></h3>
     ${p ? `<div class="row"><img class="photo-prev" src="${p.url}">
@@ -200,18 +230,18 @@ function vScan() {
   };
   return `
   <div class="card"><h3>Scanned stack</h3>
-    <p class="muted small">Feeder order (top first): 1 signature · 2 10th pass certificate · 3 10th marksheet · 4 12th certificate · 5 Aadhaar.
+    <p class="muted small">Feeder order (top first): ${docs().map((d, i) => `${i + 1} ${d.name}`).join(' · ')}.
       Drop the one PDF here – pages go into the <b>empty</b> boxes in order.</p>
     <div class="drop" data-drop="stack">Drop the scanned PDF here, or <label class="file small">choose file<input type="file" data-stack accept="application/pdf,image/*" multiple></label></div>
   </div>
-  <div class="card"><h3>Documents</h3>${DOCS.map(box).join('')}
+  <div class="card"><h3>Documents</h3>${docs().map(box).join('')}
     <p class="muted small">Wrong box? Use Replace on the right box. Click a page to rotate or re-crop it.</p></div>
   ${next('read')}`;
 }
 
 // ---- 3 Read
 function vRead() {
-  const ready = ['cert10', 'marks10', 'cert12', 'aadhaar'].every(k => M.pages[k] && M.pages[k].length);
+  const ready = docs().filter(d => d.key !== 'sign').every(d => M.pages[d.key] && M.pages[d.key].length);
   return `
   <div class="card"><h3>Read the details with Claude</h3>
     <ol class="howto">
@@ -222,7 +252,7 @@ function vRead() {
     <div class="row"><button class="primary" data-act="prepClaude" ${ready ? '' : 'disabled'}>Prepare for Claude</button>
       <button data-act="copyPrompt">Copy instruction again</button>
       <button data-act="openClaude">Open Claude</button></div>
-    ${ready ? '' : '<div class="warn">Add the 10th certificate, 10th marksheet, 12th certificate and Aadhaar first (step 2).</div>'}
+    ${ready ? '' : '<div class="warn">Add all the documents in step 2 first.</div>'}
   </div>
   <div class="card"><h3>Claude's answer</h3>
     <textarea id="reply" rows="8" placeholder="Paste the whole answer here">${S.reply ? esc(JSON.stringify(S.reply, null, 1)) : ''}</textarea>
@@ -234,14 +264,15 @@ function vRead() {
 }
 
 // ---- 4 Review
-const FIELDS = [
+const fieldsFor = d => [
   ['Name (as on 10th certificate)', [['title', 'Title', 'sel:Mr,Ms,Other'], ['firstName', 'First name'], ['middleName', 'Middle name'], ['lastName', 'Last name']]],
   ['Parents', [['mother', "Mother's name"], ['father', "Father's name"]]],
   ['Personal', [['dob', 'Date of birth (DD-MM-YYYY)'], ['gender', 'Gender', 'sel:Male,Female,Other'], ['aadhaar', 'Aadhaar number'], ['mobile', 'Mobile'], ['email', 'Email']]],
   ['Address (from Aadhaar)', [['addr1', 'Address line 1'], ['addr2', 'Address line 2'], ['addr3', 'Address line 3'], ['city', 'Village / Town / City'], ['state', 'State'], ['pin', 'PIN']]],
   ['10th', [['y10', 'Year of passing'], ['m10obt', 'Marks obtained', 'num'], ['m10max', 'Maximum marks', 'num']]],
   ['12th', [['y12', 'Year of passing'], ['m12obt', 'Total obtained', 'num'], ['m12max', 'Total maximum', 'num'],
-    ['maths', 'Maths (/200)', 'num'], ['phy', 'Physics (/200)', 'num'], ['eng', 'English (/200)', 'num']]],
+    ['maths', `Maths (/${d.mathsMax ?? 200})`, 'num'], ['phy', `Physics (/${d.phyMax ?? 200})`, 'num'], ['eng', `English (/${d.engMax ?? 200})`, 'num'],
+    ['pass', 'Passing marks (each subject)', 'num']]],
 ];
 const OPTION_ROWS = [
   ['category', 'Registration category', ['CPL', 'PPL', 'ATPL', 'FDEG', 'FATA', 'SFE', 'FN']],
@@ -273,9 +304,10 @@ function vReview() {
   <div class="card warnlist"><h3>Checks ${warns.length ? `<span class="pill red">${warns.filter(w => w.level === 'red').length} red</span> <span class="pill orange">${warns.filter(w => w.level === 'orange').length} orange</span>` : '<span class="pill ok">all clear</span>'}</h3>
     ${warns.map(w => `<div class="w ${w.level}"><span>${esc(w.text)}</span><button class="small" data-dismiss="${esc(w.id)}">It's correct</button></div>`).join('') || '<div class="muted small">No problems found.</div>'}
   </div>
-  ${FIELDS.map(([title, fs]) => `<div class="card"><h3>${title}</h3><div class="grid2">${fs.map(input).join('')}</div>
+  ${fieldsFor(d).map(([title, fs]) => `<div class="card"><h3>${title}</h3><div class="grid2">${fs.map(input).join('')}</div>
     ${title === '10th' ? `<div class="small">Percentage: <b>${dv.p10 || '–'}</b> <span class="muted">(cut off after 2 decimals)</span></div>` : ''}
-    ${title === '12th' ? `<div class="small">Percentage: <b>${dv.p12 || '–'}</b> · Board: Kerala Board of Higher Secondary Education · pass 64</div>` : ''}
+    ${title === '10th' ? `<div class="small">Board: ${esc(d.board10Name)}</div>` : ''}
+    ${title === '12th' ? `<div class="small">Percentage: <b>${dv.p12 || '–'}</b> · Board: ${esc(d.board12Name)} · pass ${esc(d.pass)}</div>` : ''}
   </div>`).join('')}
   <div class="card opts"><h3>Student options <span class="muted small">(this student only)</span></h3>
     ${OPTION_ROWS.map(([k, label, vals]) => `<div class="row"><span>${label}</span><select data-o="${k}">${vals.map(v => `<option ${S.options[k] === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>`).join('')}
@@ -286,42 +318,45 @@ function vReview() {
 
 // ---- 5 Labels & files
 function labelState(d) {
-  if (!S.labels[d.key]) {
-    const pos = settings.labelPos[d.key] || { x: 0.05, y: 0.015, w: d.w, rot: 0 };
-    S.labels[d.key] = { rot: 0, ...pos, on: true, space: false };
+  if (!S.labels[d.label]) {
+    const pos = settings.labelPos[d.label] || { x: 0.05, y: 0.015, w: d.w, rot: 0 };
+    S.labels[d.label] = { rot: 0, ...pos, on: true, space: false };
   }
-  return S.labels[d.key];
+  return S.labels[d.label];
 }
 function vLabels() {
-  const f = S.files;
-  const canBuild = canBuildFiles();
-  const slotRow = s => {
-    const file = f[s.file];
-    return `<div class="s"><b>${s.row}</b><span class="t">${s.title}${s.docNumber ? ` <span class="muted small">+ "${s.docNumber}"</span>` : ''}</span>
-      ${file ? `<span class="pill ${file.kb * 1024 <= limitFor(s.file) ? 'ok' : 'red'}">${file.type === 'application/pdf' ? 'PDF' : 'JPG'} ${file.kb} KB</span>` : '<span class="pill">not built</span>'}</div>`;
-  };
   return `
   <div class="card"><h3>Handwritten labels</h3>
     <p class="muted small">Drag a label to move it, drag its corner ◢ to resize, ✕ to remove it (e.g. already written by hand).</p>
-    ${LABELLED.map(d => {
+    ${labelled().map(d => {
       const l = labelState(d), ok = M.pages[d.key] && M.pages[d.key].length;
       return `<div class="card"><div class="row"><b>${d.name}</b><span class="muted small">Sl. No ${d.slots}</span><span class="spacer"></span>
         ${l.on ? `<button class="small" data-lab-rot="${d.key}" title="Turn the label 90°">⟳ Turn label</button> <button class="small" data-lab-off="${d.key}">✕ Remove label</button>` : `<button class="small" data-lab-on="${d.key}">+ Add label</button>`}</div>
-        ${ok ? `<div class="labelwrap"><canvas data-labcanvas="${d.key}"></canvas></div>
+        ${ok ? `<div class="labelwrap"><canvas data-labcanvas="${d.key}" style="aspect-ratio:${M.pages[d.key][0].cur.width} / ${M.pages[d.key][0].cur.height}"></canvas></div>
 `
           : '<div class="muted small">Add this document in step 2 to place its label.</div>'}
       </div>`;
     }).join('')}
   </div>
-  <div class="card"><h3>Files for Pariksha</h3>
-    <div class="slotlist">${SLOTS.map(slotRow).join('')}</div>
-    <div class="row"><button class="primary" data-act="build" ${canBuild ? '' : 'disabled'}>${doneMap().labels ? 'Rebuild files' : 'Build files'}</button>
-      ${canBuild ? '' : '<span class="warn">Needs photo, BVCs and all 5 scanned documents.</span>'}</div>
-  </div>
-  ${doneMap().labels ? next('pariksha', 'Go to Pariksha') : ''}`;
+  ${filesCard()}`;
 }
-function canBuildFiles() { return DOCS.every(d => M.pages[d.key] && M.pages[d.key].length) && !!S.photo && !!S.bvc.b10 && !!S.bvc.b12; }
-const allBuilt = () => ['photo', 'sign', 'cert10', 'marks10', 'cert12', 'aadhaar', 'b10', 'b12'].every(k => S.files[k]);
+function filesCard() {
+  const f = S.files, canBuild = canBuildFiles();
+  const slotRow = s => {
+    const file = f[s.file];
+    return `<div class="s"><b>${s.row}</b><span class="t">${s.title}${s.docNumber ? ` <span class="muted small">+ "${s.docNumber}"</span>` : ''}</span>
+      ${file ? `<span class="pill ${file.kb * 1024 <= limitFor(s.file) ? 'ok' : 'red'}">${file.type === 'application/pdf' ? 'PDF' : 'JPG'} ${file.kb} KB</span>` : '<span class="pill">not built</span>'}</div>`;
+  };
+  return `<div id="filesCard"><div class="card"><h3>Files for Pariksha</h3>
+    <div class="slotlist">${slots().map(slotRow).join('')}</div>
+    <div class="row"><button class="primary" data-act="build" ${canBuild ? '' : 'disabled'}>${allBuilt() ? 'Rebuild files' : 'Build files'}</button>
+      ${canBuild ? '' : '<span class="warn">Needs photo, BVCs and all scanned documents.</span>'}</div>
+  </div>
+  ${allBuilt() ? next('pariksha', 'Go to Pariksha') : ''}</div>`;
+}
+function refreshFilesCard() { const el = $('#filesCard'); if (el) el.outerHTML = filesCard(); refreshStepsOnly(); }
+function canBuildFiles() { return docs().every(d => M.pages[d.key] && M.pages[d.key].length) && !!S.photo && !!S.bvc.b10 && !!S.bvc.b12; }
+const allBuilt = () => ['photo', 'b10', 'b12', ...docs().map(d => d.key)].every(k => S.files[k]);
 // open step 5 or attach → build whatever is missing, without asking
 async function ensureBuilt() { if (!allBuilt() && canBuildFiles() && !M.busy) await buildFiles({ quiet: true }); }
 const limitFor = k => (k === 'photo' ? IMG.LIMITS.photo : k === 'sign' ? IMG.LIMITS.sign : IMG.LIMITS.pdf);
@@ -379,11 +414,11 @@ function vFinal(k) {
   let rows = [];
   if (k === 'register') rows = [['Name', `${d.title} / ${d.firstName} / ${d.middleName || '–'} / ${d.lastName || '–'}`], ['Mother', d.mother], ['Father', d.father],
     ['DOB', d.dob], ['Gender', d.gender], ['Aadhaar', d.aadhaar], ['Mobile', d.mobile], ['Email', d.email], ['1.15', 'Never registered with DGCA – ticked']];
-  if (k === 'flight') rows = [['Category', S.options.category], ['10th', `Kerala Board of Public Examination · ${d.y10} · ${d.m10obt}/${d.m10max} · ${dv.p10}%`],
-    ['12th', `10+2 with PM · Kerala Board of Higher Secondary Education · ${d.y12} · ${d.m12obt}/${d.m12max} · ${dv.p12}%`],
-    ['Subjects', `Maths ${d.maths} · Physics ${d.phy} · English ${d.eng} (/200, pass 64)`],
+  if (k === 'flight') rows = [['Category', S.options.category], ['10th', `${d.board10Name} · ${d.y10} · ${d.m10obt}/${d.m10max} · ${dv.p10}%`],
+    ['12th', `10+2 with PM · ${d.board12Name} · ${d.y12} · ${d.m12obt}/${d.m12max} · ${dv.p12}%`],
+    ['Subjects', `Maths ${d.maths}/${d.mathsMax} · Physics ${d.phy}/${d.phyMax} · English ${d.eng}/${d.engMax} · pass ${d.pass}`],
     ['Answers', OPTION_ROWS.slice(2).filter(o => o[0] !== 'sameAddress').map(o => `${o[1].split(' (')[0]}: ${S.options[o[0]]}`).join(' · ')]];
-  if (k === 'documents') rows = SLOTS.map(s => [s.row, `${s.title} – ${S.files[s.file] ? S.files[s.file].kb + ' KB' : 'missing'}${s.docNumber ? ` · "${s.docNumber}"` : ''}`]);
+  if (k === 'documents') rows = slots().map(s => [s.row, `${s.title} – ${S.files[s.file] ? S.files[s.file].kb + ' KB' : 'missing'}${s.docNumber ? ` · "${s.docNumber}"` : ''}`]);
   const btn = { register: 'Submit', flight: 'Save and Next', documents: 'Save and Next' }[k];
   return `<div class="card final"><h3>Final check before you press ${btn}</h3>
     <div class="small">This cannot be edited after it is submitted.</div>
@@ -416,14 +451,14 @@ document.addEventListener('click', async e => {
   if (t.dataset.labRot) {
     const d = byKey(t.dataset.labRot), l = labelState(d);
     l.rot = ((l.rot || 0) + 90) % 360; l.x = Math.min(l.x, 0.9); l.y = Math.min(l.y, 0.9);
-    settings.labelPos[d.key] = { x: l.x, y: l.y, w: l.w, rot: l.rot }; saveSettings();
+    settings.labelPos[d.label] = { x: l.x, y: l.y, w: l.w, rot: l.rot }; saveSettings();
     labelsChanged(d.key); return render();
   }
   const act = t.dataset.act;
   try {
     if (act === 'photoEdit') return openPhotoEditor();
     if (act === 'prepClaude') return prepClaude();
-    if (act === 'copyPrompt') { await navigator.clipboard.writeText(CLAUDE_PROMPT); return toast('Instruction copied'); }
+    if (act === 'copyPrompt') { await navigator.clipboard.writeText(currentPrompt()); return toast('Instruction copied'); }
     if (act === 'openClaude') return chrome.tabs.create({ url: 'https://claude.ai/new' });
     if (act === 'useReply') return useReply();
     if (act === 'confirm') { S.confirmed = true; S.step = 'labels'; save(); render(); window.scrollTo(0, 0); return ensureBuilt(); }
@@ -445,7 +480,7 @@ document.addEventListener('input', e => {
     save(); if (t.type === 'radio') render(); else refreshStepsOnly();
   }
   if (t.dataset.d) {
-    const k = t.dataset.d, numeric = ['m10obt', 'm10max', 'm12obt', 'm12max', 'maths', 'phy', 'eng'].includes(k);
+    const k = t.dataset.d, numeric = ['m10obt', 'm10max', 'm12obt', 'm12max', 'maths', 'phy', 'eng', 'pass'].includes(k);
     let v = t.value;
     if (['firstName', 'middleName', 'lastName', 'mother', 'father'].includes(k)) v = v.toUpperCase();
     S.details[k] = numeric ? (v.trim() === '' ? null : Number(v.replace(/[^\d.]/g, ''))) : v;
@@ -456,6 +491,10 @@ document.addEventListener('change', async e => {
   const t = e.target;
   if (t.dataset.d) { render(); return; }               // re-run checks after an edit
   if (t.dataset.o) { S.options[t.dataset.o] = t.value; save(); return; }
+  if (t.dataset.board) {
+    S.boards[t.dataset.board] = t.value; invalidateFiles(); applyBoards(); S.confirmed = false;
+    save(); return render();
+  }
   if (t.dataset.stage) { S.stage = t.dataset.stage; save(); return render(); }
   if (t.type === 'radio' && t.dataset.c) return;
   if (t.type !== 'file' || !t.files.length) return;
@@ -480,9 +519,9 @@ document.addEventListener('drop', async e => {
   } catch (err) { console.error(err); M.busy = ''; render(); toast('Could not read the file: ' + err.message, 6000); }
 });
 
-const byKey = k => DOCS.find(d => d.key === k);
+const byKey = k => docs().find(d => d.key === k);
 function refreshStepsOnly() { const done = doneMap(); $$('#steps button').forEach(b => b.classList.toggle('done', !!done[b.dataset.step])); }
-function invalidateFiles(keys) { (keys || ['sign', 'cert10', 'marks10', 'cert12', 'aadhaar']).forEach(k => delete S.files[k]); }
+function invalidateFiles(keys) { (keys || ALL_DOC_KEYS).forEach(k => delete S.files[k]); }
 
 // ---------------------------------------------------------------- 1 start: photo + BVC
 
@@ -539,11 +578,11 @@ async function addStack(files) {
   busy('Splitting the scanned stack…');
   const canvases = [];
   for (const f of files) canvases.push(...await IMG.fileToCanvases(f));
-  const empty = DOCS.filter(d => !(M.pages[d.key] && M.pages[d.key].length));
+  const empty = docs().filter(d => !(M.pages[d.key] && M.pages[d.key].length));
   let i = 0;
   for (const d of empty) {
     if (i >= canvases.length) break;
-    M.busy = `Cleaning up page ${i + 1} of ${canvases.length} (${d.name})…`; render();
+    busy(`Cleaning up page ${i + 1} of ${canvases.length} (${d.name})…`);
     M.pages[d.key] = await processPages(d.key, [canvases[i++]]);
     storeMeta(d.key); invalidateFiles([d.key]);
   }
@@ -628,7 +667,7 @@ function openOverlay(title, tools, hint, onClose) {
 
 async function prepClaude() {
   busy('Preparing the PDF for Claude…');
-  const pages = ['cert10', 'marks10', 'cert12', 'aadhaar'].flatMap(k => M.pages[k].map(p => p.cur));
+  const pages = docs().filter(d => d.key !== 'sign').flatMap(d => M.pages[d.key].map(p => p.cur));
   const doc = new jspdf.jsPDF({ unit: 'pt', format: 'a4', compress: true });
   pages.forEach((c, i) => {
     const s = IMG.scaleTo(c, 1800), W = 595, H = Math.round(595 * s.height / s.width);
@@ -640,10 +679,18 @@ async function prepClaude() {
   S.claudeDl = await chrome.downloads.download({ url, filename: `CN-Desk-for-Claude-${Date.now()}.pdf`, conflictAction: 'uniquify', saveAs: false });
   setTimeout(() => URL.revokeObjectURL(url), 60000);
   let copied = true;
-  try { await navigator.clipboard.writeText(CLAUDE_PROMPT); } catch (e) { copied = false; }
+  try { await navigator.clipboard.writeText(currentPrompt()); } catch (e) { copied = false; }
   M.busy = ''; save(); render();
   toast(copied ? 'PDF saved to Downloads and instruction copied. Open Claude, paste, attach the PDF.'
     : 'PDF saved to Downloads. Press "Copy instruction again" to copy the instruction.', 6000);
+}
+const currentPrompt = () => buildPrompt(S.boards);
+// board names, subject maximum and passing marks follow the boards chosen in step 1
+function applyBoards() {
+  const d = S.details; if (!d) return;
+  d.board10 = S.boards.b10; d.board12 = S.boards.b12;
+  d.board10Name = BOARD_NAME[10][S.boards.b10]; d.board12Name = BOARD_NAME[12][S.boards.b12];
+  if (!S.edited.pass) d.pass = S.boards.b12 === 'KERALA' ? 64 : 33;
 }
 async function removeClaudeDownload() {
   if (S.claudeDl == null) return;
@@ -656,7 +703,7 @@ async function useReply() {
   try {
     S.reply = parseClaudeReply(text);
     S.details = buildDetails(S.reply, S.contact);
-    S.edited = {}; S.dismissed = []; S.confirmed = false;
+    S.edited = {}; S.dismissed = []; S.confirmed = false; applyBoards();
     await removeClaudeDownload();
     S.step = 'review'; save(); render(); window.scrollTo(0, 0);
   } catch (e) { $('#replyErr').textContent = e.message; }
@@ -716,7 +763,7 @@ function setupLabelCanvas(cv, d, page, img) {
   };
   cv.onpointerup = () => {
     if (!mode) return; mode = null;
-    settings.labelPos[d.key] = { x: l.x, y: l.y, w: l.w, rot: l.rot || 0 }; saveSettings();
+    settings.labelPos[d.label] = { x: l.x, y: l.y, w: l.w, rot: l.rot || 0 }; saveSettings();
     labelsChanged(d.key); refreshStepsOnly();
   };
   draw();
@@ -736,14 +783,15 @@ async function buildFiles({ quiet = false } = {}) {
   // signature
   const sigBlob = await IMG.jpegUnder(IMG.scaleTo(M.pages.sign[0].cur, 900), IMG.LIMITS.sign);
   S.files.sign = { url: await IMG.blobToDataURL(sigBlob), kb: IMG.kb(sigBlob.size), type: 'image/jpeg' };
-  for (const d of LABELLED) {
-    M.busy = `Building ${d.name}…`; render();
+  for (const d of labelled()) {
+    busy(`Building ${d.name}…`);
     const pages = M.pages[d.key].map(p => p.cur), l = labelState(d), img = await labelImg(d.label);
     pages[0] = IMG.composeLabel(pages[0], img, l, l.on, l.space);
     const blob = await IMG.pdfUnder(pages);
     S.files[d.key] = { url: await IMG.blobToDataURL(blob), kb: IMG.kb(blob.size), type: 'application/pdf' };
   }
-  M.busy = ''; save(); render();
+  M.busy = ''; save();
+  if (quiet && S.step === 'labels') { showStatus(); refreshFilesCard(); } else render();
   const over = Object.entries(S.files).filter(([k, f]) => f.kb * 1024 > limitFor(k));
   if (quiet && !over.length) return;
   toast(over.length ? `Some files are over the limit: ${over.map(o => o[0]).join(', ')}` : 'All files built and under the limits ✓', 5000);
@@ -797,7 +845,7 @@ async function attachFiles(onlyMissing = false) {
   await ensureBuilt();
   if (!allBuilt()) return toast('Some files are missing – check steps 1, 2 and 5.', 5000);
   busy('Uploading files one by one (each one waits for Pariksha to confirm)…');
-  const files = SLOTS.map(s => {
+  const files = slots().map(s => {
     const f = S.files[s.file], ext = f.type === 'application/pdf' ? 'pdf' : 'jpg';
     const b64 = f.url.split(',')[1];
     return { row: s.row, title: s.title, name: `${String(s.row).padStart(2, '0')}_${s.title.replace(/\W+/g, '_')}.${ext}`, type: f.type, b64, size: Math.round(b64.length * 3 / 4), docNumber: s.docNumber };

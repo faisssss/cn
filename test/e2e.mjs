@@ -99,7 +99,7 @@ await panel.waitForSelector('canvas[data-labcanvas=cert10]');
 await panel.click('[data-lab-rot=marks10]');
 await panel.waitForTimeout(300);
 S = await state();
-check(S.labels.marks10.rot === 90, 'label can be turned 90°');
+check(S.labels.sl4.rot === 90, 'label can be turned 90°');
 await panel.click('[data-lab-rot=marks10]'); await panel.click('[data-lab-rot=marks10]'); await panel.click('[data-lab-rot=marks10]');
 
 // ---- 5 Labels & files
@@ -191,6 +191,45 @@ const views = await pp.evaluate(() => [...Array(11)].map((_, i) => !!document.ge
 check(views.every(Boolean) && await pp.evaluate(() => window.__uploads) === 11, 'Upload pressed in the preview window for all 11 – every row shows "click to view"');
 check(docs[5][2] === 'BVC already in DGCA' && docs[7][2] === 'BVC already in DGCA' && docs[2][2] === '', 'BVC document numbers filled, others empty');
 await shot('6-documents.png'); await pp.screenshot({ path: path.join(SHOTS, '6-documents-page.png'), fullPage: true });
+
+// ---- other boards: CBSE 10th (one sheet) + ICSE 12th (two sheets)
+await panel.bringToFront();
+await panel.click('[data-step=start]');
+await panel.selectOption('select[data-board=b10]', 'CBSE');
+await panel.selectOption('select[data-board=b12]', 'ICSE');
+await panel.click('[data-step=scan]');
+const boxNames = await panel.locator('.box .name').allTextContents();
+check(boxNames.length === 5 && /one sheet/.test(boxNames[1]) && /12th pass certificate/.test(boxNames[2]) && /12th marksheet/.test(boxNames[3]),
+  'CBSE 10th = 1 box, ICSE 12th = 2 boxes: ' + boxNames.map(n => n.split('→')[0].trim()).join(' | '));
+await panel.setInputFiles('input[data-doc=marks12]', path.join(DATA, 'stack.pdf'));   // any page will do for the test
+await idle();
+await panel.evaluate(() => { const m = globalThis.__cnMem; m.pages.marks12 = m.pages.marks12.slice(0, 1); });
+await panel.click('[data-step=review]');
+const passVal = await panel.inputValue('input[data-d=pass]');
+check(passVal === '33', 'passing marks default to 33 for ICSE 12th');
+await panel.click('[data-act=confirm]');
+await panel.waitForSelector('canvas[data-labcanvas=marks12]');
+await idle(); await panel.waitForTimeout(500); await idle();
+S = await state();
+check(S.files.marks12 && S.files.cert12 && S.files.cert10 && !('marks10' in S.files && S.files.marks10 && false), 'files built for the new layout (12th marksheet separate)');
+const labs = await panel.evaluate(() => [...document.querySelectorAll('canvas[data-labcanvas]')].map(c => c.dataset.labcanvas));
+check(labs.join(',') === 'cert10,cert12,marks12,aadhaar', 'label canvases: ' + labs.join(','));
+const statusH = await panel.evaluate(() => document.getElementById('status').offsetHeight);
+check(statusH === 24, 'status line has a fixed height (' + statusH + 'px)');
+await panel.click('[data-step=pariksha]');
+await pp.bringToFront();
+await pp.goto('https://pariksha.dgca.gov.in/Form/Flight_Crew_Details');
+await panel.waitForFunction(() => document.querySelector('.page-now')?.textContent.includes('Flight'));
+await panel.click('[data-act=fill]');
+await panel.waitForFunction(() => document.querySelector('.report h3'), null, { timeout: 30000 });
+const fl2 = await pp.evaluate(() => {
+  const txt = s => s.options[s.selectedIndex].textContent.trim();
+  const rows = t => [...document.querySelectorAll(`#${t} tbody > tr[id^="${t}-"]`)].filter(r => !r.id.endsWith('-0'))
+    .map(r => [...r.querySelectorAll('select')].map(txt).concat([...r.querySelectorAll('input:not([type=hidden])')].map(i => i.value)));
+  return { edu: rows('educationwith12'), sub: rows('subject1') };
+});
+check(fl2.edu[0][1] === 'Central Board of Secondary Education' && fl2.edu[1][1] === 'ICSE', 'education boards: CBSE 10th, ICSE 12th');
+check(fl2.sub.every(r => r[1] === 'ICSE' && r[4] === '33'), 'subject rows: ICSE, pass 33');
 
 // Done wipes everything
 await panel.bringToFront();

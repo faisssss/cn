@@ -1,12 +1,23 @@
 // Turning what Claude read off the documents into Pariksha form values, plus the checks.
 // Pure functions only (no DOM), so they can be tested in Node.
 
-export const CLAUDE_PROMPT = `You are reading Indian school documents for a DGCA Pariksha (Computer Number) application.
+// Instruction for Claude, matching the pages the PDF will contain for these boards.
+export function buildPrompt(boards = {}) {
+  const b10 = boards.b10 || 'KERALA', b12 = boards.b12 || 'KERALA';
+  const pages = [];
+  if (b10 === 'CBSE') pages.push('10th CBSE marks statement cum certificate (one sheet: use it for BOTH "tenth_certificate" and "tenth_marksheet")');
+  else pages.push(`10th ${b10 === 'ICSE' ? 'ICSE' : '(SSLC)'} pass certificate`, `10th ${b10 === 'ICSE' ? 'ICSE' : ''} marksheet`.replace('  ', ' '));
+  if (b12 === 'ICSE') pages.push('12th ISC pass certificate', '12th ISC marksheet');
+  else pages.push(`12th ${b12 === 'CBSE' ? 'CBSE' : '(Higher Secondary)'} certificate cum mark statement (one sheet)`);
+  pages.push('Aadhaar card (front and back)');
+  const notes = [];
+  if (b10 !== 'KERALA') notes.push(`10th (${b10}): "total_obtained" = the sum of the marks of EVERY subject that has marks (additional subjects included, grade-only subjects left out); "total_maximum" = 100 × the number of those subjects.`);
+  if (b12 === 'KERALA') notes.push('12th (Kerala): subject marks are the subject TOTAL column (all parts added, usually out of 200). "total_obtained" / "total_maximum" are the grand totals printed (e.g. 792 / 1200).');
+  else notes.push(`12th (${b12}): fill "twelfth_certificate" from the 12th pages. Subject marks are each subject's total (out of 100). "total_obtained" = the sum of the marks of EVERY subject that has marks (grade-only subjects left out); "total_maximum" = 100 × the number of those subjects.`);
+  if (b10 === 'KERALA') notes.push('10th (Kerala): "total_obtained" / "total_maximum" are the grand totals printed on the marksheet (e.g. 395 / 650).');
+  return `You are reading Indian school documents for a DGCA Pariksha (Computer Number) application.
 The attached PDF has these pages, in order:
-  1. 10th (SSLC) pass certificate
-  2. 10th marksheet
-  3. 12th (Higher Secondary) certificate / marksheet
-  4. Aadhaar card (front and back)
+${pages.map((p, i) => `  ${i + 1}. ${p}`).join('\n')}
 
 Copy every value EXACTLY as printed (same spelling, same initials, same order). Do not correct, guess or expand anything.
 If a value is not printed or you cannot read it with certainty, use null.
@@ -38,9 +49,10 @@ Reply with ONLY this JSON inside one \`\`\`json code block, nothing else:
 \`\`\`
 
 Notes:
-- For the 12th, subject marks are the subject TOTAL (all parts added, usually out of 200) as printed on the certificate.
-- "total_obtained" / "total_maximum" are the grand totals printed on that document (e.g. 395 / 650, 792 / 1200).
+${notes.map(n => `- ${n}`).join('\n')}
 - aadhaar_number: the 12 digits without spaces. care_of: the "S/O", "D/O", "C/O" or "W/O" line exactly as printed.`;
+}
+export const CLAUDE_PROMPT = buildPrompt();
 
 // ---------- parsing ----------
 
@@ -200,10 +212,13 @@ export function checkDetails(d, r) {
   over(d.phy, d.phyMax, 'Physics', 'phy');
   over(d.maths, d.mathsMax, 'Maths', 'maths');
   over(d.eng, d.engMax, 'English', 'eng');
+  const kerala12 = !d.board12 || d.board12 === 'KERALA', subMax = kerala12 ? 200 : 100;
   for (const [k, n] of [['phyMax', 'Physics'], ['mathsMax', 'Maths'], ['engMax', 'English']]) {
-    if (d[k] !== 200) add('orange', k, `${n} maximum is ${d[k]}, not the usual 200`);
+    if (d[k] !== subMax) add('orange', k, `${n} maximum is ${d[k]}, not the usual ${subMax}`);
   }
-  if (d.m12max != null && d.m12max !== 1200) add('orange', 'm12max', `12th maximum is ${d.m12max}, not the usual 1200`);
+  if (kerala12 && d.m12max != null && d.m12max !== 1200) add('orange', 'm12max', `12th maximum is ${d.m12max}, not the usual 1200`);
+  if (d.pass == null || d.pass === '') add('red', 'pass', 'Passing marks are empty');
+  else if (!kerala12 && Number(d.pass) === 33) add('orange', 'pass', 'Passing marks set to 33 for CBSE/ICSE – change it if you use a different number');
   for (const k of ['addr1', 'addr2', 'addr3']) if ((d[k] || '').length > 60) add('orange', k, `${k.replace('addr', 'Address line ')} is long (${d[k].length} characters)`);
 
   if (r) {

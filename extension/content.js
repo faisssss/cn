@@ -198,10 +198,10 @@
     if (!edu) r.bad('Education table', 'not found');
     else {
       const rows = await ensureRows(edu, 2);
-      if (rows[0]) await fillRow(r, rows[0], '10th', ['10th', 'Kerala Board of Public Examination', d.y10, 'Percentage'],
+      if (rows[0]) await fillRow(r, rows[0], '10th', ['10th', d.board10Name || 'Kerala Board of Public Examination', d.y10, 'Percentage'],
         ['', '1', String(d.m10obt ?? ''), String(d.m10max ?? ''), d.p10, '']);
       else r.bad('Education 10th row', 'row not found');
-      if (rows[1]) await fillRow(r, rows[1], '12th', ['10+2 with PM', 'Kerala Board of Higher Secondary Education', d.y12, 'Percentage'],
+      if (rows[1]) await fillRow(r, rows[1], '12th', ['10+2 with PM', d.board12Name || 'Kerala Board of Higher Secondary Education', d.y12, 'Percentage'],
         ['', '2', String(d.m12obt ?? ''), String(d.m12max ?? ''), d.p12, '']);
       else r.bad('Education 12th row', 'row not found – press Add Row and fill again');
     }
@@ -209,12 +209,12 @@
     if (!sub) r.bad('Subject table', 'not found');
     else {
       const rows = await ensureRows(sub, 3);
-      const HSE = 'Kerala Board of Higher Secondary Education';
+      const HSE = d.board12Name || 'Kerala Board of Higher Secondary Education', PASS = String(d.pass ?? 64);
       const subjects = [['Maths', d.maths, d.mathsMax], ['Physics', d.phy, d.phyMax], ['English', d.eng, d.engMax]];
       for (let i = 0; i < 3; i++) {
         if (!rows[i]) { r.bad(`Subject row ${i + 1}`, 'row not found'); continue; }
         const [name, obt, max] = subjects[i];
-        await fillRow(r, rows[i], name, [name, HSE], [String(obt ?? ''), String(max ?? 200), '64']);
+        await fillRow(r, rows[i], name, [name, HSE], [String(obt ?? ''), String(max ?? 200), PASS]);
       }
     }
     await fillRadio(r, 'additionaldoc', opt.additionalDoc, `Additional document: ${opt.additionalDoc}`);
